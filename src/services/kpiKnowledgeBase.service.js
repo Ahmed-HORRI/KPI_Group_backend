@@ -1,15 +1,313 @@
 const { pool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
-const { loadSubjectHierarchyData } = require("../models/kpi.model");
+const {
+  loadSubjectHierarchyData,
+  getPeopleDisplayName,
+  normalizeKpiImportanceValue,
+  normalizeKpiPricingTypeValue,
+} = require("../models/kpi.model");
 
 let kpiKnowledgeRefreshWorkerTimer = null;
 let kpiKnowledgeRefreshWorkerRunning = false;
 let kpiRatioSchemaPromise = null;
+let kpiAssistantConversationSchemaPromise = null;
 
 const KPI_KNOWLEDGE_BASE_MAX_DEPTH = 5;
 
 const KPI_KNOWLEDGE_REFRESH_BATCH_SIZE = 10;
 const KPI_KNOWLEDGE_REFRESH_INTERVAL_MS = 5000;
+
+const KPI_KNOWLEDGE_BASE_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "this",
+  "to",
+  "with",
+  "de",
+  "des",
+  "du",
+  "et",
+  "la",
+  "le",
+  "les",
+  "pour",
+  "sur",
+  "une",
+  "un"
+]);
+
+const normalizeKnowledgeBaseSearchText = (value) =>
+  String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenizeKnowledgeBaseText = (value, maxItems = 24) => {
+  const normalized = normalizeKnowledgeBaseSearchText(value);
+  if (!normalized) return [];
+
+  const tokens = normalized
+    .split(/[^\p{L}\p{N}_]+/u)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length > 2 &&
+        !KPI_KNOWLEDGE_BASE_STOP_WORDS.has(token)
+    );
+
+  return [...new Set(tokens)].slice(0, maxItems);
+};
+
+const flattenKnowledgeBaseStrings = (value) => {
+  if (value === undefined || value === null) return [];
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return [String(value)];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(flattenKnowledgeBaseStrings);
+  }
+
+  if (typeof value === "object") {
+    return Object.values(value).flatMap(flattenKnowledgeBaseStrings);
+  }
+
+  return [];
+};
+
+const uniqueKnowledgeBaseTexts = (values = [], maxItems = 20) => {
+  const seen = new Set();
+  const results = [];
+
+  for (const value of values) {
+    const text = normalizeOptionalTextInput(value);
+    const normalized = normalizeKnowledgeBaseSearchText(text);
+    if (!text || !normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    results.push(text);
+    if (results.length >= maxItems) break;
+  }
+
+  return results;
+};
+
+const buildKnowledgeBaseKeywordList = (values = [], maxItems = 40) => {
+  const phrases = uniqueKnowledgeBaseTexts(
+    flattenKnowledgeBaseStrings(values),
+    Math.min(maxItems, 18)
+  );
+  const tokens = uniqueKnowledgeBaseTexts(
+    phrases.flatMap((entry) => tokenizeKnowledgeBaseText(entry, maxItems)),
+    maxItems
+  );
+
+  return [...phrases, ...tokens].slice(0, maxItems);
+};
+
+const formatKnowledgeBaseTimestamp = (value) => {
+  if (!value) return null;
+  const dateValue = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dateValue.getTime())) {
+    return normalizeOptionalTextInput(value);
+  }
+  return dateValue.toISOString();
+};
+
+const normalizeOptionalDateInput = (value) => {
+  const text = normalizeOptionalTextInput(value);
+  if (text === null) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+
+  const parsed = new Date(`${text}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? null : text;
+};
+
+const formatDateOnlyValue = (value = new Date()) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const normalizedText = value.trim();
+    const dateOnlyMatch = normalizedText.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (dateOnlyMatch) {
+      return `${dateOnlyMatch[1]}-${dateOnlyMatch[2]}-${dateOnlyMatch[3]}`;
+    }
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const buildKpiKnowledgeBaseScopeLabel = (parts = []) =>
+  parts
+    .map((value) => normalizeOptionalTextInput(value))
+    .filter(Boolean)
+    .join(" / ");
+
+const buildKpiKnowledgeBaseAllocationEntry = (row = {}) => {
+  const scopeLabel = buildKpiKnowledgeBaseScopeLabel([
+    row.plant_name,
+    row.zone_name,
+    row.unit_name,
+    row.unit_type_name,
+    row.role_name,
+    row.function_name,
+    row.product_name,
+    row.product_line_name,
+    row.market_name,
+    row.customer_name
+  ]) || `Allocation ${row.kpi_target_allocation_id}`;
+
+  return {
+    allocation_id: row.kpi_target_allocation_id,
+    scope_label: scopeLabel,
+    target: {
+      value: row.target_value ?? null,
+      unit: row.target_unit || null,
+      local_currency: row.local_currency || null,
+      type: row.kpi_type || null,
+      status: row.target_status || null
+    },
+    baseline: {
+      previous_target_value: row.previous_target_value ?? null,
+      last_best_target: row.last_best_target ?? null
+    },
+    dates: {
+      setup_date: normalizeOptionalDateInput(row.target_setup_date),
+      start_date: normalizeOptionalDateInput(row.target_start_date),
+      end_date: normalizeOptionalDateInput(row.target_end_date),
+      created_at: formatKnowledgeBaseTimestamp(row.created_at),
+      updated_at: formatKnowledgeBaseTimestamp(row.updated_at)
+    },
+    scope: {
+      plant: row.plant_id ? { id: row.plant_id, name: row.plant_name || "" } : null,
+      zone: row.zone_id ? { id: row.zone_id, name: row.zone_name || "" } : null,
+      unit: row.unit_id ? { id: row.unit_id, name: row.unit_name || "" } : null,
+      unit_type: row.unit_type_id ? { id: row.unit_type_id, name: row.unit_type_name || "" } : null,
+      role: row.role_id ? { id: row.role_id, name: row.role_name || "" } : null,
+      function_name: row.function_name || null,
+      product: row.product_id ? { id: row.product_id, name: row.product_name || "" } : null,
+      product_line: row.product_line_id ? { id: row.product_line_id, name: row.product_line_name || "" } : null,
+      market: row.market_id ? { id: row.market_id, name: row.market_name || "" } : null,
+      customer: row.customer_id ? { id: row.customer_id, name: row.customer_name || "" } : null
+    },
+    people: {
+      set_by: row.set_by_people_id
+        ? { id: row.set_by_people_id, name: getPeopleDisplayName(row.set_by_people || {}) || "" }
+        : null,
+      created_by: row.created_by_people_id
+        ? { id: row.created_by_people_id, name: getPeopleDisplayName(row.created_by_people || {}) || "" }
+        : null,
+      approved_by: row.approved_by_people_id
+        ? { id: row.approved_by_people_id, name: getPeopleDisplayName(row.approved_by_people || {}) || "" }
+        : null
+    },
+    comments: normalizeOptionalTextInput(row.comments) || "",
+    keywords: buildKnowledgeBaseKeywordList([
+      scopeLabel,
+      row.function_name,
+      row.plant_name,
+      row.zone_name,
+      row.unit_name,
+      row.unit_type_name,
+      row.role_name,
+      row.product_name,
+      row.product_line_name,
+      row.market_name,
+      row.customer_name,
+      row.comments,
+      row.kpi_type,
+      row.target_status
+    ], 18)
+  };
+};
+
+const buildKpiKnowledgeBaseResultEntry = (row = {}, allocationScopeById = new Map()) => {
+  const allocationId = normalizeOptionalIntegerInput(row.kpi_target_allocation_id);
+  const allocationScope = allocationId ? allocationScopeById.get(allocationId) || null : null;
+  const recordedByName = row.recorded_by_people_id
+    ? getPeopleDisplayName({
+      name: row.recorded_by_people_name,
+      first_name: row.recorded_by_people_first_name
+    }) || ""
+    : "";
+
+  return {
+    result_id: row.kpi_result_id,
+    allocation_id: allocationId,
+    scope_label: allocationScope?.scope_label || (allocationId ? `Allocation ${allocationId}` : null),
+    period: {
+      result_date: row.result_date ? formatDateOnlyValue(row.result_date) : null,
+      week: row.week || null,
+      type: row.period_type || null,
+      label: row.period_label || null
+    },
+    value: {
+      raw_value: row.raw_value ?? null,
+      unit: row.unit || null,
+      status: row.result_status || null
+    },
+    targets: {
+      target_value: row.target_value ?? null,
+      best_new_target: row.best_new_target ?? null
+    },
+    thresholds: {
+      lower_limit: row.lower_limit ?? null,
+      upper_limit: row.upper_limit ?? null
+    },
+    source: {
+      data_source: row.data_source || null,
+      recorded_at: formatKnowledgeBaseTimestamp(row.recorded_at),
+      recorded_by: row.recorded_by_people_id
+        ? {
+          id: row.recorded_by_people_id,
+          name: recordedByName
+        }
+        : null
+    },
+    comments: normalizeOptionalTextInput(row.comments) || "",
+    keywords: buildKnowledgeBaseKeywordList([
+      allocationScope?.scope_label,
+      row.period_type,
+      row.period_label,
+      row.week,
+      row.result_status,
+      row.data_source,
+      row.comments,
+      recordedByName,
+      row.unit
+    ], 16)
+  };
+};
+
 
 const loadKpiKnowledgeBaseSourceData = async (db, kpiId) => {
   const normalizedKpiId = normalizeOptionalIntegerInput(kpiId);
@@ -1221,4 +1519,133 @@ const ensureKpiRatioSchema = async () => {
   return kpiRatioSchemaPromise;
 };
 
-module.exports = { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId, refreshKpiKnowledgeBases };
+const ensureKpiAssistantConversationSchema = async () => {
+  if (!kpiAssistantConversationSchemaPromise) {
+    kpiAssistantConversationSchemaPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.kpi_assistant_conversation (
+          conversation_id BIGSERIAL PRIMARY KEY,
+          people_role_assignment_id INTEGER,
+          people_id INTEGER,
+          kpi_id INTEGER,
+          conversation JSONB NOT NULL DEFAULT '[]'::jsonb,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ADD COLUMN IF NOT EXISTS people_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ADD COLUMN IF NOT EXISTS kpi_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ADD COLUMN IF NOT EXISTS conversation JSONB
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ALTER COLUMN people_role_assignment_id DROP NOT NULL
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ALTER COLUMN conversation SET DEFAULT '[]'::jsonb
+      `);
+
+      await pool.query(`
+        UPDATE public.kpi_assistant_conversation
+        SET conversation = '[]'::jsonb
+        WHERE conversation IS NULL
+      `);
+
+      await pool.query(`
+        UPDATE public.kpi_assistant_conversation kac
+        SET people_id = pra.people_id
+        FROM public.people_role_assignment pra
+        WHERE kac.people_role_assignment_id = pra.assignment_id
+          AND kac.people_id IS NULL
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'kpi_assistant_conversation_people_role_assignment_id_fkey'
+          ) THEN
+            ALTER TABLE public.kpi_assistant_conversation
+            ADD CONSTRAINT kpi_assistant_conversation_people_role_assignment_id_fkey
+            FOREIGN KEY (people_role_assignment_id)
+            REFERENCES public.people_role_assignment (assignment_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'kpi_assistant_conversation_people_id_fkey'
+          ) THEN
+            ALTER TABLE public.kpi_assistant_conversation
+            ADD CONSTRAINT kpi_assistant_conversation_people_id_fkey
+            FOREIGN KEY (people_id)
+            REFERENCES public.people (people_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'kpi_assistant_conversation_kpi_id_fkey'
+          ) THEN
+            ALTER TABLE public.kpi_assistant_conversation
+            ADD CONSTRAINT kpi_assistant_conversation_kpi_id_fkey
+            FOREIGN KEY (kpi_id)
+            REFERENCES public.kpi (kpi_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_assistant_conversation_assignment
+        ON public.kpi_assistant_conversation (people_role_assignment_id, kpi_id, updated_at DESC)
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_assistant_conversation_people
+        ON public.kpi_assistant_conversation (people_id, kpi_id, updated_at DESC)
+      `);
+    })().catch((error) => {
+      kpiAssistantConversationSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return kpiAssistantConversationSchemaPromise;
+};
+
+module.exports = { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId, refreshKpiKnowledgeBases, ensureKpiAssistantConversationSchema };

@@ -1,5 +1,11 @@
 const { pool } = require("../config/db");
-const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
+const {
+  normalizeOptionalTextInput,
+  normalizeOptionalIntegerInput,
+  normalizeOptionalNumericInput,
+} = require("../utils/normalize");
+const { createHttpError } = require("../utils/httpError");
+const { normalizeKpiFileUploadPayload } = require("../utils/kpiFileUpload");
 
 const getKpiStoredFileName = (storedPath) => {
   const normalizedPath = normalizeOptionalTextInput(storedPath);
@@ -366,6 +372,421 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
   return result.rows.map((row) => mapKpiRowToClient(row, subjectHierarchy.pathById));
 };
 
+const KPI_REACTIVITY_STATUS_OPTIONS = Object.freeze(["Anticipated", "Reactive"]);
+
+const prepareKpiWritePayload = (payload = {}) => {
+  const rawSubjectNodeId = normalizeOptionalTextInput(payload.subject_node_id ?? payload.subject_id);
+  const rawTarget = normalizeOptionalTextInput(payload.target ?? payload.target_value);
+  const rawMinValue = normalizeOptionalTextInput(payload.min ?? payload.min_value);
+  const rawMaxValue = normalizeOptionalTextInput(payload.max ?? payload.max_value);
+  const rawUpTolerance = normalizeOptionalTextInput(payload.up_tolerance);
+  const rawLowTolerance = normalizeOptionalTextInput(payload.low_tolerance);
+  const rawHighLimit = normalizeOptionalTextInput(payload.high_limit);
+  const rawLowLimit = normalizeOptionalTextInput(payload.low_limit);
+  const rawReferenceKpiId = normalizeOptionalTextInput(payload.reference_kpi_id);
+  const rawOwnerRoleId = normalizeOptionalTextInput(payload.owner_role_id);
+  const rawKfs = normalizeOptionalTextInput(payload.kfs);
+  const fileUpload = normalizeKpiFileUploadPayload(
+    payload.file_upload ?? payload.fileUpload
+  );
+  const fileSourcePath = normalizeOptionalTextInput(
+    payload.file_source_path ?? payload.fileSourcePath
+  );
+  const fileSourceName = normalizeOptionalTextInput(
+    payload.file_source_name ?? payload.fileSourceName ?? payload.file_name
+  );
+  const kfs = ["KPI", "KFS"].includes(rawKfs) ? rawKfs : null;
+  const subjectNodeId = rawSubjectNodeId === null ? null : Number(rawSubjectNodeId);
+  const targetValue = normalizeOptionalNumericInput(rawTarget);
+  const minValue = normalizeOptionalNumericInput(rawMinValue);
+  const maxValue = normalizeOptionalNumericInput(rawMaxValue);
+  const upTolerance = normalizeOptionalNumericInput(rawUpTolerance, { allowPercent: true });
+  const lowTolerance = normalizeOptionalNumericInput(rawLowTolerance, { allowPercent: true });
+  const highLimit = normalizeOptionalNumericInput(rawHighLimit);
+  const lowLimit = normalizeOptionalNumericInput(rawLowLimit);
+  const calculationMode = normalizeOptionalTextInput(payload.calculation_mode);
+  const calculationOn = normalizeOptionalTextInput(payload.calculation_on);
+  const frequency = normalizeOptionalTextInput(payload.frequency);
+  const targetDirection = normalizeOptionalTextInput(payload.target_direction || payload.direction);
+  const toleranceType = normalizeOptionalTextInput(payload.tolerance_type);
+  const displayTrend = normalizeOptionalTextInput(payload.display_trend);
+  const regression = normalizeOptionalTextInput(payload.regression);
+  const minType = normalizeOptionalTextInput(payload.min_type);
+  const maxType = normalizeOptionalTextInput(payload.max_type);
+  const nombrePeriode = normalizeOptionalTextInput(payload.nombre_periode);
+  const targetAutoAdjustment = normalizeOptionalTextInput(payload.target_auto_adjustment);
+  const reactivityStatus = normalizeOptionalTextInput(payload.reactivity_status);
+  const rawImportance = normalizeOptionalTextInput(payload.importance);
+  const importance = normalizeKpiImportanceValue(rawImportance);
+  const rawPricingType = normalizeOptionalTextInput(payload.pricing_type);
+  const pricingType = normalizeKpiPricingTypeValue(rawPricingType);
+  const reactivityNeed = normalizeOptionalTextInput(payload.reactivity_need);
+  const referenceKpiId = rawReferenceKpiId === null ? null : Number(rawReferenceKpiId);
+  const ownerRoleId = rawOwnerRoleId === null ? null : Number(rawOwnerRoleId);
+  const kpiName = normalizeOptionalTextInput(payload.kpi_name ?? payload.indicator_sub_title);
+  const unit = normalizeOptionalTextInput(payload.unit);
+  const subject = normalizeOptionalTextInput(payload.subject);
+  const explanation = normalizeOptionalTextInput(payload.kpi_explanation ?? payload.definition);
+  const status = normalizeOptionalTextInput(payload.status) || "Active";
+  const normalizedCalculationMode = String(calculationMode || "").toLowerCase();
+  const normalizedCalculationOn = String(calculationOn || "").toLowerCase();
+  const normalizedDisplayTrend = String(displayTrend || "").toLowerCase();
+  const normalizedToleranceType = String(toleranceType || "").toLowerCase();
+
+  if (!kpiName) {
+    throw createHttpError(400, "KPI name is required.");
+  }
+
+  if (!frequency) {
+    throw createHttpError(400, "Frequency is required.");
+  }
+
+  if (!unit) {
+    throw createHttpError(400, "Unit is required.");
+  }
+
+  if (!targetDirection) {
+    throw createHttpError(400, "Direction is required.");
+  }
+
+  if (!explanation) {
+    throw createHttpError(400, "Definition is required.");
+  }
+
+  if (!calculationOn) {
+    throw createHttpError(400, "Calculation On is required.");
+  }
+
+  if (normalizedCalculationOn === "average" && !nombrePeriode) {
+    throw createHttpError(400, "Nombre periode is required.");
+  }
+
+  if (!calculationMode) {
+    throw createHttpError(400, "Calculation mode is required.");
+  }
+
+  if (!displayTrend) {
+    throw createHttpError(400, "Display trend is required.");
+  }
+
+  if (normalizedDisplayTrend === "yes" && !regression) {
+    throw createHttpError(400, "Regression is required when display trend is Yes.");
+  }
+
+  if (!kfs) {
+    throw createHttpError(400, "KFS is required.");
+  }
+
+  if (!minType) {
+    throw createHttpError(400, "Min selection is required.");
+  }
+
+  if (!maxType) {
+    throw createHttpError(400, "Max selection is required.");
+  }
+
+  if (String(minType).toLowerCase() === "valeur a entrer" && rawMinValue === null) {
+    throw createHttpError(400, "Min value is required.");
+  }
+
+  if (String(maxType).toLowerCase() === "valeur a entrer" && rawMaxValue === null) {
+    throw createHttpError(400, "Max value is required.");
+  }
+
+  if (!toleranceType) {
+    throw createHttpError(400, "Tolerance type is required.");
+  }
+
+  if (normalizedToleranceType === "relative" && rawUpTolerance === null) {
+    throw createHttpError(400, "Up tolerance is required.");
+  }
+
+  if (normalizedToleranceType === "relative" && rawLowTolerance === null) {
+    throw createHttpError(400, "Low tolerance is required.");
+  }
+
+  if (normalizedToleranceType === "absolute" && rawHighLimit === null) {
+    throw createHttpError(400, "High limit is required.");
+  }
+
+  if (normalizedToleranceType === "absolute" && rawLowLimit === null) {
+    throw createHttpError(400, "Low limit is required.");
+  }
+
+  if (!targetAutoAdjustment) {
+    throw createHttpError(400, "Target auto adjust is required.");
+  }
+
+  if (reactivityStatus !== null && !KPI_REACTIVITY_STATUS_OPTIONS.includes(reactivityStatus)) {
+    throw createHttpError(400, "Reactivity status is invalid.");
+  }
+
+  if (rawImportance !== null && importance === null) {
+    throw createHttpError(400, "Importance is invalid.");
+  }
+
+  if (rawPricingType !== null && pricingType === null) {
+    throw createHttpError(400, "Pricing type is invalid.");
+  }
+
+  if (reactivityNeed !== null && !KPI_REACTIVITY_NEED_OPTIONS.includes(reactivityNeed)) {
+    throw createHttpError(400, "Reactivity need is invalid.");
+  }
+
+  if (rawSubjectNodeId !== null && (!Number.isInteger(subjectNodeId) || subjectNodeId <= 0)) {
+    throw createHttpError(400, "Subject selection is invalid.");
+  }
+
+  if (rawTarget !== null && targetValue === null) {
+    throw createHttpError(400, "Target must be numeric.");
+  }
+
+  if (rawMinValue !== null && minValue === null) {
+    throw createHttpError(400, "Min value must be numeric.");
+  }
+
+  if (rawMaxValue !== null && maxValue === null) {
+    throw createHttpError(400, "Max value must be numeric.");
+  }
+
+  if (rawUpTolerance !== null && upTolerance === null) {
+    throw createHttpError(400, 'Up tolerance must be numeric. Use values like "100" or "100%".');
+  }
+
+  if (rawLowTolerance !== null && lowTolerance === null) {
+    throw createHttpError(400, 'Low tolerance must be numeric. Use values like "60" or "60%".');
+  }
+
+  if (rawHighLimit !== null && highLimit === null) {
+    throw createHttpError(400, "High limit must be numeric.");
+  }
+
+  if (rawLowLimit !== null && lowLimit === null) {
+    throw createHttpError(400, "Low limit must be numeric.");
+  }
+
+  if (rawReferenceKpiId !== null && (!Number.isInteger(referenceKpiId) || referenceKpiId <= 0)) {
+    throw createHttpError(400, "Reference KPI_ID must be a valid integer.");
+  }
+
+  if (normalizedCalculationMode === "ratio" && referenceKpiId === null) {
+    throw createHttpError(400, "Reference KPI_ID is required for Ratio mode.");
+  }
+
+  if (rawOwnerRoleId !== null && (!Number.isInteger(ownerRoleId) || ownerRoleId <= 0)) {
+    throw createHttpError(400, "Owner role must be a valid integer.");
+  }
+
+  return {
+    subject_id: subjectNodeId,
+    indicator_title: normalizeOptionalTextInput(payload.indicator_title),
+    indicator_sub_title: kpiName,
+    kpi_name: kpiName,
+    kpi_sub_title: normalizeOptionalTextInput(payload.kpi_sub_title ?? payload.indicator_title),
+    kpi_code: normalizeOptionalTextInput(payload.kpi_code),
+    kpi_formula: normalizeOptionalTextInput(payload.kpi_formula),
+    unit,
+    subject,
+    definition: explanation,
+    kpi_explanation: explanation,
+    frequency,
+    target: targetValue === null ? null : Number(targetValue),
+    target_value: targetValue === null ? null : Number(targetValue),
+    target_direction: targetDirection,
+    tolerance_type: toleranceType,
+    up_tolerance: rawUpTolerance === null ? null : rawUpTolerance.replace(/\s+/g, ""),
+    low_tolerance: rawLowTolerance === null ? null : rawLowTolerance.replace(/\s+/g, ""),
+    max: maxValue === null ? null : Number(maxValue),
+    max_value: maxValue === null ? null : Number(maxValue),
+    min: minValue === null ? null : Number(minValue),
+    min_value: minValue === null ? null : Number(minValue),
+    nombre_periode: nombrePeriode,
+    calculation_mode: calculationMode,
+    display_trend: displayTrend,
+    regression,
+    min_type: minType,
+    max_type: maxType,
+    calculation_on: calculationOn,
+    target_auto_adjustment: targetAutoAdjustment,
+    reactivity_status: reactivityStatus,
+    importance,
+    pricing_type: pricingType,
+    reactivity_need: reactivityNeed,
+    kfs,
+    reference_kpi_id: normalizedCalculationMode === "ratio" ? referenceKpiId : null,
+    owner_role_id: ownerRoleId,
+    status,
+    comments: normalizeOptionalTextInput(payload.comments),
+    high_limit: highLimit === null ? null : Number(highLimit),
+    low_limit: lowLimit === null ? null : Number(lowLimit),
+    file_upload: fileUpload,
+    file_source_path: fileSourcePath,
+    file_source_name: fileSourceName
+  };
+};
+
+const resolveSubjectIdForKpiPayload = async (payload = {}) => {
+  if (Number.isInteger(payload.subject_id) && payload.subject_id > 0) {
+    return payload.subject_id;
+  }
+
+  const subjectText = normalizeOptionalTextInput(payload.subject);
+  if (!subjectText) return null;
+
+  const subjectHierarchy = await loadSubjectHierarchyData();
+  const loweredSubjectText = subjectText.toLowerCase();
+
+  for (const [subjectId, fullPath] of subjectHierarchy.pathById.entries()) {
+    if (String(fullPath || "").toLowerCase() === loweredSubjectText) {
+      return Number(subjectId);
+    }
+  }
+
+  for (const [subjectId, node] of subjectHierarchy.nodeMap.entries()) {
+    if (String(node?.name || "").toLowerCase() === loweredSubjectText) {
+      return Number(subjectId);
+    }
+  }
+
+  return null;
+};
+
+const upsertPrimarySubjectKpiLink = async (client, kpiId, subjectId) => {
+  await client.query(
+    `
+    UPDATE public.subject_kpi
+    SET is_primary = FALSE
+    WHERE kpi_id = $1
+    `,
+    [kpiId]
+  );
+
+  const existing = await client.query(
+    `
+    SELECT subject_kpi_id
+    FROM public.subject_kpi
+    WHERE kpi_id = $1
+      AND subject_id = $2
+    ORDER BY subject_kpi_id ASC
+    LIMIT 1
+    `,
+    [kpiId, subjectId]
+  );
+
+  if (existing.rows.length) {
+    await client.query(
+      `
+      UPDATE public.subject_kpi
+      SET
+        is_primary = TRUE,
+        importance_level = COALESCE(importance_level, 'Primary')
+      WHERE subject_kpi_id = $1
+      `,
+      [existing.rows[0].subject_kpi_id]
+    );
+    return;
+  }
+
+  await client.query(
+    `
+    INSERT INTO public.subject_kpi (
+      subject_id,
+      kpi_id,
+      importance_level,
+      is_primary,
+      comments
+    )
+    VALUES ($1, $2, $3, $4, $5)
+    `,
+    [subjectId, kpiId, "Primary", true, null]
+  );
+};
+
+const deleteKpiDependentRecords = async (client, kpiId) => {
+  const allocationResult = await client.query(
+    `
+    SELECT kpi_target_allocation_id
+    FROM public.kpi_target_allocation
+    WHERE kpi_id = $1
+    `,
+    [kpiId]
+  );
+
+  const allocationIds = allocationResult.rows
+    .map((row) =>
+      normalizeOptionalIntegerInput(row.kpi_target_allocation_id)
+    )
+    .filter((value) => Number.isInteger(value) && value > 0);
+
+  // Delete KPI assistant conversations
+  await client.query(
+    `
+    DELETE FROM public.kpi_assistant_conversation
+    WHERE kpi_id = $1
+    `,
+    [kpiId]
+  );
+
+  if (allocationIds.length) {
+
+
+    // Delete KPI results before allocations
+    await client.query(
+      `
+      DELETE FROM public.kpi_result
+      WHERE kpi_target_allocation_id = ANY($1::int[])
+      `,
+      [allocationIds]
+    );
+  }
+
+  // Now allocations can be deleted safely
+  await client.query(
+    `
+    DELETE FROM public.kpi_target_allocation
+    WHERE kpi_id = $1
+    `,
+    [kpiId]
+  );
+
+  await client.query(
+  `
+  DELETE FROM public.kpi_training_result
+  WHERE test_id IN (
+    SELECT test_id
+    FROM public.kpi_test
+    WHERE kpi_id = $1
+  )
+  `,
+  [kpiId]
+);
+
+  await client.query(
+  `
+  DELETE FROM public.kpi_test
+  WHERE kpi_id = $1
+  `,
+  [kpiId]
+);
+
+
+await client.query(
+  `
+  DELETE FROM public.kpi_training
+  WHERE kpi_id = $1
+  `,
+  [kpiId]
+);
+
+  await client.query(
+    `
+    DELETE FROM public.subject_kpi
+    WHERE kpi_id = $1
+    `,
+    [kpiId]
+  );
+};
+
 module.exports = {
   getKpiStoredFileName,
   getKpiDisplayFileName,
@@ -376,4 +797,8 @@ module.exports = {
   mapKpiRowToClient,
   loadSubjectHierarchyData,
   loadKpiRowsForUi,
+  prepareKpiWritePayload,
+  resolveSubjectIdForKpiPayload,
+  upsertPrimarySubjectKpiLink,
+  deleteKpiDependentRecords,
 };

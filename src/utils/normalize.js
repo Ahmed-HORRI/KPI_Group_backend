@@ -10,4 +10,21 @@ const normalizeOptionalIntegerInput = (value) => {
   return Number(text);
 };
 
-module.exports = { normalizeOptionalTextInput, normalizeOptionalIntegerInput };
+const NUMERIC_TEXT_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+const normalizeOptionalNumericInput = (value, { allowPercent = false } = {}) => {
+  const text = normalizeOptionalTextInput(value);
+  if (text === null) return null;
+
+  let normalized = text.replace(/\s+/g, "").replace(/,/g, ".");
+  if (allowPercent && normalized.endsWith("%")) {
+    normalized = normalized.slice(0, -1);
+  }
+
+  return NUMERIC_TEXT_PATTERN.test(normalized) ? normalized : null;
+};
+
+module.exports = {
+  normalizeOptionalTextInput,
+  normalizeOptionalIntegerInput,
+  normalizeOptionalNumericInput,
+};
