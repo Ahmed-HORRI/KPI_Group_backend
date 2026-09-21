@@ -756,7 +756,58 @@ const buildAbsoluteAppUrl = (req, relativePath = "/") => {
   return `${protocol}://${host}${normalizedPath}`;
 };
 
+const getCorrectiveActionSortTime = (action = {}) => {
+  const rawValue =
+    action.updated_date ??
+    action.updatedDate ??
+    action.created_date ??
+    action.createdDate ??
+    null;
+
+  const timestamp = rawValue ? new Date(rawValue).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const sortCorrectiveActions = (actions = []) =>
+  [...actions].sort((a, b) => {
+    const timeDiff = getCorrectiveActionSortTime(b) - getCorrectiveActionSortTime(a);
+    if (timeDiff !== 0) return timeDiff;
+
+    const parsedIdA = parseInt(a.corrective_action_id ?? a.correctiveActionId ?? a.id ?? 0, 10);
+    const parsedIdB = parseInt(b.corrective_action_id ?? b.correctiveActionId ?? b.id ?? 0, 10);
+    const idA = Number.isFinite(parsedIdA) ? parsedIdA : 0;
+    const idB = Number.isFinite(parsedIdB) ? parsedIdB : 0;
+    return idB - idA;
+  });
+
+const getLatestCorrectiveAction = (actions = []) => {
+  const sorted = sortCorrectiveActions(actions);
+  return sorted.length ? sorted[0] : null;
+};
+
+const getCorrectiveActionOverdueDays = (dateValue, now = new Date()) => {
+  if (!dateValue) return 0;
+
+  const dueDate = parseDateOnlyValue(dateValue);
+  if (!dueDate || isNaN(dueDate.getTime())) return 0;
+
+  const currentDay = new Date(now);
+  currentDay.setHours(0, 0, 0, 0);
+
+  const dueDay = new Date(dueDate);
+  dueDay.setHours(0, 0, 0, 0);
+
+  const diffMs = currentDay.getTime() - dueDay.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 0;
+
+  return Math.floor(diffMs / 86400000);
+};
+
 module.exports = {
+  getCorrectiveActionSortTime,
+  sortCorrectiveActions,
+  getLatestCorrectiveAction,
+  getCorrectiveActionOverdueDays,
   normalizeText,
   isPercentageUnit,
   parseMetricNumber,
