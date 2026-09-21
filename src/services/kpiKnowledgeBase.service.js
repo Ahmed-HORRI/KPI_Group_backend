@@ -1648,4 +1648,13 @@ const ensureKpiAssistantConversationSchema = async () => {
   return kpiAssistantConversationSchemaPromise;
 };
 
-module.exports = { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId, refreshKpiKnowledgeBases, ensureKpiAssistantConversationSchema };
+module.exports = {
+  ensureKpiRatioSchema,
+  refreshKpiKnowledgeBaseForKpiId,
+  refreshKpiKnowledgeBases,
+  ensureKpiAssistantConversationSchema,
+  buildKnowledgeBaseKeywordList,
+  uniqueKnowledgeBaseTexts,
+  normalizeKnowledgeBaseSearchText,
+  tokenizeKnowledgeBaseText,
+};

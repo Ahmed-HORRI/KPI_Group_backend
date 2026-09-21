@@ -26,6 +26,19 @@ const {
   copyExistingKpiFile,
   deleteStoredKpiFile,
 } = require("../services/kpiFile.service");
+const openai = require("../config/openai");
+const {
+  loadKpiKnowledgeBaseForAssistant,
+  buildStoredKpiKnowledgeBaseContext,
+  buildKpiAssistantMessagesForOpenAI,
+  writeSseEvent,
+  loadKpiAssistantConversationRow,
+} = require("../services/kpiAssistant.service");
+const {
+  normalizeKpiFrequency,
+  buildKpiChartHistorySeries,
+  KPI_CHART_HISTORY_WINDOW,
+} = require("../services/kpiChart.service");
 
 router.get("/api/kpis", async (req, res) => {
   try {
@@ -647,6 +660,375 @@ router.delete("/api/kpis/:id", async (req, res) => {
     if (client) {
       client.release();
     }
+  }
+});
+
+router.post("/api/kpis/:id/ai-support", async (req, res) => {
+  let client;
+  const wantsStream = req.body?.stream === true || req.body?.stream === "true";
+
+  try {
+    await ensureKpiRatioSchema();
+    await ensureKpiAssistantConversationSchema();
+
+    const kpiId = normalizeOptionalIntegerInput(req.params.id);
+    const message = normalizeOptionalTextInput(req.body.message);
+    const peopleId =
+      normalizeOptionalIntegerInput(req.body.people_id) ||
+      normalizeOptionalIntegerInput(req.body.responsible_id);
+
+    if (!kpiId) {
+      return res.status(400).json({ error: "KPI ID is required." });
+    }
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required." });
+    }
+
+    if (!peopleId) {
+      return res.status(400).json({ error: "people_id or responsible_id is required." });
+    }
+
+    const kpiRow = await loadKpiKnowledgeBaseForAssistant(kpiId);
+
+    if (!kpiRow || !kpiRow.kpi_knowledge_base) {
+      return res.json({
+        answer:
+          "No KPI knowledge base is available for this KPI. Please refresh or generate kpi_knowledge_base first."
+      });
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    let conversationRow = await loadKpiAssistantConversationRow(client, {
+      peopleId,
+      kpiId,
+      forUpdate: true
+    });
+
+    if (!conversationRow) {
+      const inserted = await client.query(
+        `
+        INSERT INTO public.kpi_assistant_conversation (
+          people_id,
+          kpi_id,
+          conversation
+        )
+        VALUES ($1, $2, '[]'::jsonb)
+        RETURNING conversation_id, people_id, kpi_id, conversation
+        `,
+        [peopleId, kpiId]
+      );
+
+      conversationRow = inserted.rows[0];
+    }
+
+    const existingConversation = Array.isArray(conversationRow.conversation)
+      ? conversationRow.conversation
+      : [];
+
+    const storedKpiKnowledgeContext = buildStoredKpiKnowledgeBaseContext({
+      knowledgeBase: kpiRow.kpi_knowledge_base,
+      message,
+      conversationHistory: existingConversation,
+      selectedKpiSummary: null,
+      selectedKpi: {
+        kpi_id: kpiRow.kpi_id,
+        title: kpiRow.kpi_name,
+        subtitle: kpiRow.kpi_sub_title
+      }
+    });
+    const messagesForOpenAI = buildKpiAssistantMessagesForOpenAI({
+      kpiRow,
+      existingConversation,
+      message,
+      ragContext: storedKpiKnowledgeContext
+    });
+    let answer = "";
+
+    if (wantsStream) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+
+      const completionStream = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messagesForOpenAI,
+        temperature: 0.2,
+        stream: true
+      });
+
+      for await (const chunk of completionStream) {
+        const delta = chunk?.choices?.[0]?.delta?.content || "";
+        if (!delta) continue;
+        answer += delta;
+        writeSseEvent(res, "delta", { delta });
+      }
+    } else {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messagesForOpenAI,
+        temperature: 0.2
+      });
+
+      answer = completion.choices?.[0]?.message?.content || "";
+    }
+
+    const nextConversation = [
+      ...existingConversation,
+      {
+        role: "user",
+        content: message,
+        text: message,
+        ts: Date.now()
+      },
+      {
+        role: "assistant",
+        content: answer,
+        text: answer,
+        ts: Date.now()
+      }
+    ].slice(-50);
+
+    await client.query(
+      `
+      UPDATE public.kpi_assistant_conversation
+      SET
+        conversation = $2::jsonb,
+        updated_at = NOW()
+      WHERE conversation_id = $1
+      `,
+      [conversationRow.conversation_id, JSON.stringify(nextConversation)]
+    );
+
+    await client.query("COMMIT");
+
+    if (wantsStream) {
+      writeSseEvent(res, "done", {
+        answer,
+        conversation: nextConversation,
+        kpi_id: kpiRow.kpi_id,
+        kpi_name: kpiRow.kpi_name
+      });
+      res.end();
+      return;
+    }
+
+    res.json({
+      answer,
+      conversation: nextConversation,
+      kpi_id: kpiRow.kpi_id,
+      kpi_name: kpiRow.kpi_name
+    });
+  } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => { });
+    }
+
+    console.error("POST /api/kpis/:id/ai-support error:", error);
+    if (wantsStream && !res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+    }
+
+    if (wantsStream) {
+      writeSseEvent(res, "error", {
+        error: "Failed to answer KPI question"
+      });
+      res.end();
+      return;
+    }
+
+    res.status(500).json({ error: "Failed to answer KPI question" });
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+});
+
+router.delete("/api/kpis/:id/ai-support/conversation", async (req, res) => {
+  try {
+    await ensureKpiAssistantConversationSchema();
+
+    const kpiId = normalizeOptionalIntegerInput(req.params.id);
+    const peopleId =
+      normalizeOptionalIntegerInput(req.body?.people_id) ||
+      normalizeOptionalIntegerInput(req.body?.responsible_id) ||
+      normalizeOptionalIntegerInput(req.query?.people_id) ||
+      normalizeOptionalIntegerInput(req.query?.responsible_id);
+
+    if (!kpiId) {
+      return res.status(400).json({ error: "KPI ID is required." });
+    }
+
+    if (!peopleId) {
+      return res.status(400).json({ error: "people_id or responsible_id is required." });
+    }
+
+    await pool.query(
+      `
+      DELETE FROM public.kpi_assistant_conversation
+      WHERE kpi_id = $1
+        AND people_id = $2
+      `,
+      [kpiId, peopleId]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("DELETE /api/kpis/:id/ai-support/conversation error:", error);
+    res.status(500).json({ error: "Failed to reset KPI assistant conversation" });
+  }
+});
+
+router.get("/api/kpi-chart-data", async (req, res) => {
+  try {
+    const { kpi_id, week, kpi_values_id, frequency } = req.query;
+    const allocationId = normalizeOptionalIntegerInput(kpi_values_id);
+    const kpiId = normalizeOptionalIntegerInput(kpi_id);
+    const normalizedWeek = normalizeOptionalTextInput(week);
+
+    if ((!allocationId && !kpiId) || !normalizedWeek) {
+      return res.status(400).json({ error: "Missing kpi_values_id or kpi_id, or week" });
+    }
+
+    const baseWhereClause = allocationId
+      ? "kr.kpi_target_allocation_id = $1"
+      : "kr.kpi_id = $1";
+    const baseWhereValue = allocationId || kpiId;
+
+    const kpiFrequencyRes = await pool.query(
+      `
+   SELECT k.frequency
+   FROM public.kpi k
+  LEFT JOIN public.kpi_target_allocation kta
+    ON kta.kpi_id = k.kpi_id
+  WHERE
+    ($1::integer IS NOT NULL AND k.kpi_id = $1)
+    OR ($2::integer IS NOT NULL AND kta.kpi_target_allocation_id = $2)
+  LIMIT 1
+  `,
+      [kpiId, allocationId]
+    );
+
+    const frequencyMode = normalizeKpiFrequency(
+      frequency || (/^\d{4}-\d{2}-\d{2}$/.test(normalizedWeek) ? "Daily" : kpiFrequencyRes.rows[0]?.frequency)
+    );
+
+    console.log("KPI CHART DATA DEBUG", {
+      query: req.query,
+      frequency,
+      dbFrequency: kpiFrequencyRes.rows[0]?.frequency,
+      normalizedWeek,
+      frequencyMode
+    });
+
+    const histRes = await pool.query(
+      `
+      SELECT
+        TO_CHAR(kr.result_date, 'YYYY-MM-DD') AS result_date,
+        kr.week,
+        kr.period_label,
+        kr.raw_value AS new_value,
+        kr.recorded_at AS updated_at
+      FROM public.kpi_result kr
+      WHERE ${baseWhereClause}
+        AND kr.raw_value IS NOT NULL
+      ORDER BY
+        kr.result_date ASC NULLS LAST,
+        kr.week ASC,
+        kr.period_label ASC,
+        kr.recorded_at ASC,
+        kr.kpi_result_id ASC
+      `,
+      [baseWhereValue]
+    );
+
+    const currentRes = await pool.query(
+      `
+      SELECT kr.raw_value AS value
+      FROM public.kpi_result kr
+      WHERE ${baseWhereClause}
+        AND (
+        kr.period_label = $2
+        OR kr.week = $2
+        OR TO_CHAR(kr.result_date, 'YYYY-MM-DD') = $2
+       )
+      ORDER BY kr.recorded_at DESC, kr.kpi_result_id DESC
+      LIMIT 1
+      `,
+      [baseWhereValue, normalizedWeek]
+    );
+
+    const currentValue = parseFloat(currentRes.rows[0]?.value);
+    const chartSeries = buildKpiChartHistorySeries({
+      historyItems: histRes.rows,
+      frequencyMode,
+      currentPeriodLabel: normalizedWeek,
+      currentValue,
+      windowSize: KPI_CHART_HISTORY_WINDOW
+    });
+
+    const limitsRes = await pool.query(
+      `
+  SELECT
+    COALESCE(latest_limits.target_value, kta.target_value, k.target_value) AS target,
+    COALESCE(latest_limits.upper_limit, k.high_limit) AS high_limit,
+    COALESCE(latest_limits.lower_limit, k.low_limit) AS low_limit
+  FROM public.kpi k
+  LEFT JOIN public.kpi_target_allocation kta
+    ON kta.kpi_id = k.kpi_id
+    AND ($1::integer IS NULL OR kta.kpi_target_allocation_id = $1)
+  LEFT JOIN LATERAL (
+    SELECT
+      kr.target_value,
+      kr.upper_limit,
+      kr.lower_limit
+    FROM public.kpi_result kr
+    WHERE kr.kpi_target_allocation_id = COALESCE($1::integer, kta.kpi_target_allocation_id)
+      AND (
+        kr.target_value IS NOT NULL
+        OR kr.upper_limit IS NOT NULL
+        OR kr.lower_limit IS NOT NULL
+      )
+    ORDER BY
+      CASE
+        WHEN $3::text IS NOT NULL AND (kr.week = $3 OR kr.period_label = $3) THEN 0
+        ELSE 1
+      END,
+      COALESCE(kr.result_date::timestamp, kr.recorded_at) DESC,
+      kr.recorded_at DESC,
+      kr.kpi_result_id DESC
+    LIMIT 1
+  ) latest_limits ON TRUE
+  WHERE k.kpi_id = $2
+  LIMIT 1
+  `,
+      [allocationId, kpiId, normalizedWeek]
+    );
+
+    res.json({
+      labels: chartSeries.labels,
+      values: chartSeries.values,
+      currentMonthLabel: chartSeries.currentPeriodLabel,
+      currentValue: isNaN(currentValue) ? null : currentValue,
+      target: limitsRes.rows[0]?.target ?? null,
+      highLimit: limitsRes.rows[0]?.high_limit ?? null,
+      lowLimit: limitsRes.rows[0]?.low_limit ?? null
+    });
+  } catch (err) {
+    console.error("kpi-chart-data error:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
