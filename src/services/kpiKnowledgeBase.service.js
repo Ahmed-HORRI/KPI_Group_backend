@@ -1,5 +1,6 @@
 const { pool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
+const { normalizeOptionalDateInput, formatDateOnlyValue } = require("../utils/weekPeriod");
 const {
   loadSubjectHierarchyData,
   getPeopleDisplayName,
@@ -135,35 +136,6 @@ const formatKnowledgeBaseTimestamp = (value) => {
     return normalizeOptionalTextInput(value);
   }
   return dateValue.toISOString();
-};
-
-const normalizeOptionalDateInput = (value) => {
-  const text = normalizeOptionalTextInput(value);
-  if (text === null) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
-
-  const parsed = new Date(`${text}T00:00:00Z`);
-  return Number.isNaN(parsed.getTime()) ? null : text;
-};
-
-const formatDateOnlyValue = (value = new Date()) => {
-  if (!value) return null;
-
-  if (typeof value === "string") {
-    const normalizedText = value.trim();
-    const dateOnlyMatch = normalizedText.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (dateOnlyMatch) {
-      return `${dateOnlyMatch[1]}-${dateOnlyMatch[2]}-${dateOnlyMatch[3]}`;
-    }
-  }
-
-  const parsed = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(parsed.getTime())) return null;
-
-  const year = parsed.getFullYear();
-  const month = String(parsed.getMonth() + 1).padStart(2, "0");
-  const day = String(parsed.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 };
 
 const buildKpiKnowledgeBaseScopeLabel = (parts = []) =>

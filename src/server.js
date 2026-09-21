@@ -12,6 +12,7 @@ const { createHttpError } = require("./utils/httpError");
 const { upsertPrimarySubjectKpiLink } = require("./models/kpi.model");
 
 const kpisRoutes = require("./routes/kpis.routes");
+const responsiblesRoutes = require("./routes/responsibles.routes");
 const { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId } = require("./services/kpiKnowledgeBase.service");
 const { registerRecommendationRoutes } = require("./services/kpiRecommendations.service");
 const { registerAIGeneratedKpiRoutes } = require("./services/kpiDerivedGenerator.service");
@@ -24,6 +25,7 @@ app.use(bodyParser.json({ limit: "40mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "40mb" }));
 
 app.use(kpisRoutes);
+app.use(responsiblesRoutes);
 
 registerRecommendationRoutes(app, pool, createTransporter);
 registerAIGeneratedKpiRoutes(app, {

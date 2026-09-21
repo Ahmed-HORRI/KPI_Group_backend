@@ -787,6 +787,58 @@ await client.query(
   );
 };
 
+
+const annotateOwnedKpisForResponsible = (rows = [], responsiblePeopleId = null) => {
+  const normalizedResponsiblePeopleId = normalizeOptionalIntegerInput(responsiblePeopleId);
+
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const normalizedCreatedByPeopleId = normalizeOptionalIntegerInput(row?.created_by_people_id);
+
+    return {
+      ...row,
+      is_owned_by_responsible:
+        normalizedResponsiblePeopleId !== null &&
+        normalizedCreatedByPeopleId !== null &&
+        normalizedCreatedByPeopleId === normalizedResponsiblePeopleId
+    };
+  });
+};
+
+const deleteKpiTargetAllocationDependentRecords = async (
+  client,
+  allocationIds = []
+) => {
+  const normalizedAllocationIds = Array.from(
+    new Set(
+      (Array.isArray(allocationIds) ? allocationIds : [allocationIds])
+        .map((value) => normalizeOptionalIntegerInput(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+
+  if (!normalizedAllocationIds.length) {
+    return [];
+  }
+
+  await client.query(
+    `
+    DELETE FROM public.kpi_monitoring_status
+    WHERE kpi_target_allocation_id = ANY($1::int[])
+    `,
+    [normalizedAllocationIds]
+  );
+
+  await client.query(
+    `
+    DELETE FROM public.kpi_result
+    WHERE kpi_target_allocation_id = ANY($1::int[])
+    `,
+    [normalizedAllocationIds]
+  );
+
+  return normalizedAllocationIds;
+};
+
 module.exports = {
   getKpiStoredFileName,
   getKpiDisplayFileName,
@@ -801,4 +853,6 @@ module.exports = {
   resolveSubjectIdForKpiPayload,
   upsertPrimarySubjectKpiLink,
   deleteKpiDependentRecords,
+  annotateOwnedKpisForResponsible,
+  deleteKpiTargetAllocationDependentRecords,
 };

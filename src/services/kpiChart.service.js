@@ -5,6 +5,7 @@ const {
   getCurrentWeekFromPseudoDate,
   formatIsoDateValue,
   parseWeekLabelDate,
+  normalizeOptionalDateInput,
 } = require("../utils/weekPeriod");
 const { normalizeOptionalTextInput } = require("../utils/normalize");
 
