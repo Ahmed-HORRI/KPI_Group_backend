@@ -15,6 +15,8 @@ const kpisRoutes = require("./routes/kpis.routes");
 const responsiblesRoutes = require("./routes/responsibles.routes");
 const correctiveActionsRoutes = require("./routes/correctiveActions.routes");
 const trainingRoutes = require("./routes/training.routes");
+const statisticsRoutes = require("./routes/statistics.routes");
+const unitsRoutes = require("./routes/units.routes");
 const { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId } = require("./services/kpiKnowledgeBase.service");
 const { registerRecommendationRoutes } = require("./services/kpiRecommendations.service");
 const { registerAIGeneratedKpiRoutes } = require("./services/kpiDerivedGenerator.service");
@@ -31,6 +33,8 @@ app.use(kpisRoutes);
 app.use(responsiblesRoutes);
 app.use(correctiveActionsRoutes);
 app.use(trainingRoutes);
+app.use(statisticsRoutes);
+app.use(unitsRoutes);
 
 registerRecommendationRoutes(app, pool, createTransporter);
 registerAIGeneratedKpiRoutes(app, {
