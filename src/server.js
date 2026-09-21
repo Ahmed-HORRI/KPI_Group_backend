@@ -14,9 +14,11 @@ const { upsertPrimarySubjectKpiLink } = require("./models/kpi.model");
 const kpisRoutes = require("./routes/kpis.routes");
 const responsiblesRoutes = require("./routes/responsibles.routes");
 const correctiveActionsRoutes = require("./routes/correctiveActions.routes");
+const trainingRoutes = require("./routes/training.routes");
 const { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId } = require("./services/kpiKnowledgeBase.service");
 const { registerRecommendationRoutes } = require("./services/kpiRecommendations.service");
 const { registerAIGeneratedKpiRoutes } = require("./services/kpiDerivedGenerator.service");
+const { ensureKpiTrainingEscalationSchema } = require("./services/kpiTraining.service");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -28,6 +30,7 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "40mb" }));
 app.use(kpisRoutes);
 app.use(responsiblesRoutes);
 app.use(correctiveActionsRoutes);
+app.use(trainingRoutes);
 
 registerRecommendationRoutes(app, pool, createTransporter);
 registerAIGeneratedKpiRoutes(app, {
@@ -48,6 +51,14 @@ ensureKpiRatioSchema()
   })
   .catch((error) => {
     console.error("[KPI Knowledge Base] Sync infrastructure setup failed:", error.message);
+  });
+
+ensureKpiTrainingEscalationSchema()
+  .then(() => {
+    console.log("[KPI Training Reminder] Escalation tracking table is ready.");
+  })
+  .catch((error) => {
+    console.error("[KPI Training Reminder] Escalation tracking setup failed:", error.message);
   });
 
 app.listen(port, () => console.log("Server running on port " + port));
