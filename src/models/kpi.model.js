@@ -855,4 +855,5 @@ module.exports = {
   deleteKpiDependentRecords,
   annotateOwnedKpisForResponsible,
   deleteKpiTargetAllocationDependentRecords,
+  KPI_IMPORTANCE_OPTIONS,
 };

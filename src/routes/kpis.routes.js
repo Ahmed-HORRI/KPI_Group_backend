@@ -26,7 +26,7 @@ const {
   copyExistingKpiFile,
   deleteStoredKpiFile,
 } = require("../services/kpiFile.service");
-const openai = require("../config/openai");
+const { openai } = require("../config/openai");
 const {
   loadKpiKnowledgeBaseForAssistant,
   buildStoredKpiKnowledgeBaseContext,

@@ -5,7 +5,7 @@ const cors = require("cors");
 const cron = require("node-cron");
 
 const { pool } = require("./config/db");
-const openai = require("./config/openai");
+const { getOpenAIClient } = require("./config/openai");
 const { createTransporter } = require("./config/mailer");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("./utils/normalize");
 const { createHttpError } = require("./utils/httpError");
@@ -13,6 +13,7 @@ const { upsertPrimarySubjectKpiLink } = require("./models/kpi.model");
 
 const kpisRoutes = require("./routes/kpis.routes");
 const responsiblesRoutes = require("./routes/responsibles.routes");
+const correctiveActionsRoutes = require("./routes/correctiveActions.routes");
 const { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId } = require("./services/kpiKnowledgeBase.service");
 const { registerRecommendationRoutes } = require("./services/kpiRecommendations.service");
 const { registerAIGeneratedKpiRoutes } = require("./services/kpiDerivedGenerator.service");
@@ -26,6 +27,7 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "40mb" }));
 
 app.use(kpisRoutes);
 app.use(responsiblesRoutes);
+app.use(correctiveActionsRoutes);
 
 registerRecommendationRoutes(app, pool, createTransporter);
 registerAIGeneratedKpiRoutes(app, {
@@ -33,7 +35,7 @@ registerAIGeneratedKpiRoutes(app, {
   ensureKpiRatioSchema,
   refreshKpiKnowledgeBaseForKpiId,
   upsertPrimarySubjectKpiLink,
-  getOpenAIClient: () => openai,
+  getOpenAIClient,
   cronScheduler: cron,
   normalizeOptionalIntegerInput,
   normalizeOptionalTextInput,

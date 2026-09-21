@@ -183,6 +183,20 @@ const formatDateOnlyValue = (value = new Date()) => {
   return `${year}-${month}-${day}`;
 };
 
+const parseDateOnlyValue = (value) => {
+  const normalizedDate = formatDateOnlyValue(value);
+  if (!normalizedDate) return null;
+
+  const match = normalizedDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 module.exports = {
   DEFAULT_KPI_SUBMISSION_TIMEZONE,
   getCanonicalKpiSubmissionFrequency,
@@ -195,4 +209,5 @@ module.exports = {
   parseWeekLabelDate,
   normalizeOptionalDateInput,
   formatDateOnlyValue,
+  parseDateOnlyValue,
 };
