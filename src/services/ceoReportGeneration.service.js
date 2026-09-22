@@ -1677,7 +1677,6 @@ const getDepartmentKPIReport = async (plantId, week) => {
           ON kr.kpi_target_allocation_id = pa.kpi_target_allocation_id
         WHERE ($2::text IS NULL OR kr.period_label = $2 OR kr.week = $2)
           AND kr.raw_value IS NOT NULL
-          AND kr.raw_value != ''
           AND CAST(kr.raw_value AS TEXT) ~ '^[0-9.]+$'
       )
       SELECT
@@ -1772,7 +1771,6 @@ const getDepartmentKPIReport = async (plantId, week) => {
         LIMIT 1
       ) subject_link ON TRUE
       WHERE kr.raw_value IS NOT NULL
-        AND kr.raw_value != ''
         AND CAST(kr.raw_value AS TEXT) ~ '^[0-9.]+$'
       ORDER BY pa.kpi_target_allocation_id ASC, week ASC
       `,

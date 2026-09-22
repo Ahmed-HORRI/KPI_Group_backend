@@ -2,7 +2,12 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../config/db");
 const { normalizeOptionalIntegerInput, normalizeOptionalTextInput } = require("../utils/normalize");
-const { sendDepartmentKPIReportEmail, getCurrentWeek } = require("../services/ceoReportGeneration.service");
+const {
+  sendDepartmentKPIReportEmail,
+  getCurrentWeek,
+  getDepartmentKPIReport,
+  CEO_REPORT_RECIPIENT_EMAIL,
+} = require("../services/ceoReportGeneration.service");
 const { triggerHierarchyReportNow } = require("../services/hierarchyReport.service");
 
 const toIntOrNull = (value) => {
@@ -402,6 +407,35 @@ router.get("/api/ceo-kpi/dashboard", async (req, res) => {
     res.status(500).json({ error: "Failed to load CEO KPI dashboard" });
   }
 });
+// JSON equivalent of the original GET /ceo-report/plants/:plantId HTML preview
+// page, for the React frontend (Etape 2) -- returns the report data instead of
+// rendering generateManagerReportHtml() server-side.
+router.get("/api/ceo-report/plants/:plantId", async (req, res) => {
+  try {
+    const plantId = normalizeOptionalIntegerInput(req.params.plantId);
+    const reportWeek = normalizeOptionalTextInput(req.query?.week) || getCurrentWeek();
+
+    if (!plantId) {
+      return res.status(400).json({ error: "Invalid plantId" });
+    }
+
+    const reportData = await getDepartmentKPIReport(plantId, reportWeek);
+    if (!reportData || reportData.stats.totalKPIs === 0) {
+      return res.status(404).json({
+        error: "No KPI report data available for this plant and week."
+      });
+    }
+
+    res.json({
+      ...reportData,
+      deliveryRecipient: CEO_REPORT_RECIPIENT_EMAIL
+    });
+  } catch (error) {
+    console.error("CEO report preview error:", error.message);
+    res.status(500).json({ error: "Failed to generate CEO report preview." });
+  }
+});
+
 router.post("/api/ceo-report/plants/:plantId/send", async (req, res) => {
   try {
     const plantId = normalizeOptionalIntegerInput(req.params.plantId);
