@@ -1,6 +1,12 @@
 const { pool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
-const { formatDateOnlyValue, parseDateOnlyValue } = require("../utils/weekPeriod");
+const {
+  formatDateOnlyValue,
+  parseDateOnlyValue,
+  formatIsoDateValue,
+  parseWeekLabelDate,
+  normalizeOptionalDateInput,
+} = require("../utils/weekPeriod");
 const { KPI_IMPORTANCE_OPTIONS } = require("../models/kpi.model");
 
 const isPercentageUnit = (unit) => {
@@ -803,6 +809,97 @@ const getCorrectiveActionOverdueDays = (dateValue, now = new Date()) => {
   return Math.floor(diffMs / 86400000);
 };
 
+// ============================================================
+// Ported from the monolith's app.post("/redirect", ...) handler
+// (index.js) and its supporting helpers. Used by the JSON
+// equivalent POST /api/responsibles/:responsibleId/kpi-results.
+// ============================================================
+
+const buildKpiFormUrl = ({
+  responsibleId,
+  week,
+  calculationMode = null,
+  frequency = null,
+  unitId = null
+} = {}) => {
+  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
+  const normalizedWeek = normalizeOptionalTextInput(week);
+
+  const params = new URLSearchParams();
+  if (normalizedResponsibleId) {
+    params.set("responsible_id", String(normalizedResponsibleId));
+  }
+  if (normalizedWeek) {
+    params.set("week", normalizedWeek);
+  }
+
+  const normalizedCalculationMode = normalizeOptionalTextInput(calculationMode);
+  if (normalizedCalculationMode) {
+    params.set("calculation_mode", normalizedCalculationMode);
+  }
+
+  const normalizedFrequency = normalizeOptionalTextInput(frequency);
+  if (normalizedFrequency) {
+    params.set("frequency", normalizedFrequency);
+  }
+
+  const normalizedUnitId = normalizeOptionalIntegerInput(unitId);
+  if (normalizedUnitId) {
+    params.set("unit_id", String(normalizedUnitId));
+  }
+
+  const query = params.toString();
+  return query ? `/form?${query}` : "/form";
+};
+
+const sanitizeKpiFormReturnUrl = (value, fallback = null) => {
+  const text = normalizeOptionalTextInput(value);
+  if (!text || !text.startsWith("/form")) return fallback;
+  if (text.startsWith("//")) return fallback;
+  return text;
+};
+
+const deriveKpiResultDate = (periodLabel) => {
+  const normalizedDate = normalizeOptionalDateInput(periodLabel);
+  if (normalizedDate) return normalizedDate;
+
+  const text = String(periodLabel || "").trim();
+  if (/^\d{4}-\d{2}$/.test(text)) return `${text}-01`;
+
+  const quarterMatch = text.match(/^(\d{4})-Q([1-4])$/i);
+  if (quarterMatch) {
+    const quarterStartMonth = String((Number(quarterMatch[2]) - 1) * 3 + 1).padStart(2, "0");
+    return `${quarterMatch[1]}-${quarterStartMonth}-01`;
+  }
+
+  if (/^\d{4}$/.test(text)) return `${text}-01-01`;
+
+  return formatIsoDateValue(parseWeekLabelDate(periodLabel)) || formatIsoDateValue(new Date());
+};
+
+const deriveKpiResultPeriodType = (periodLabel) => {
+  const text = normalizeOptionalTextInput(periodLabel);
+  if (!text) return "Date";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return "Date";
+  if (/^\d{4}-Week\d{1,2}$/i.test(text)) return "Week";
+  if (/^\d{4}-\d{2}$/.test(text)) return "Month";
+  if (/^\d{4}-Q[1-4]$/i.test(text)) return "Quarter";
+  if (/^\d{4}$/.test(text)) return "Year";
+  return "Period";
+};
+
+const resolveRecordedByPeopleId = async (candidateId) => {
+  const peopleId = normalizeOptionalIntegerInput(candidateId);
+  if (!peopleId) return null;
+
+  const result = await pool.query(
+    `SELECT people_id FROM public.people WHERE people_id = $1 LIMIT 1`,
+    [peopleId]
+  );
+
+  return result.rows[0]?.people_id ?? null;
+};
+
 module.exports = {
   getCorrectiveActionSortTime,
   sortCorrectiveActions,
@@ -844,4 +941,9 @@ module.exports = {
   normalizeCorrectiveActionEstimatedDurationDays,
   escapeHtml,
   buildAbsoluteAppUrl,
+  buildKpiFormUrl,
+  sanitizeKpiFormReturnUrl,
+  deriveKpiResultDate,
+  deriveKpiResultPeriodType,
+  resolveRecordedByPeopleId,
 };

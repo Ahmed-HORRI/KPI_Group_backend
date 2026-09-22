@@ -1,7 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../config/db");
-const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
+const {
+  normalizeOptionalTextInput,
+  normalizeOptionalIntegerInput,
+  normalizeOptionalNumericInput,
+} = require("../utils/normalize");
 const { createHttpError } = require("../utils/httpError");
 const {
   loadKpiRowsForUi,
@@ -14,7 +18,29 @@ const {
 const {
   resolveResponsiblePeopleId,
   resolveResponsibleOwnerContext,
+  loadFormResponsibleContext,
 } = require("../models/responsible.model");
+const { formatIsoDateValue } = require("../utils/weekPeriod");
+const {
+  buildKpiFormUrl,
+  sanitizeKpiFormReturnUrl,
+  deriveKpiResultDate,
+  deriveKpiResultPeriodType,
+  resolveRecordedByPeopleId,
+  getDashboardSubmissionStatus,
+  normalizeText,
+  normalizeCorrectiveActionEstimatedDurationDays,
+  normalizeCorrectiveActionImportance,
+  normalizeCorrectiveActionUrgency,
+} = require("../services/kpiShared.service");
+const {
+  canUseActionPlanCorrectiveActions,
+  syncActionPlanCorrectiveActionsForPeriod,
+} = require("../services/actionPlan.service");
+const {
+  evaluateAndCreateKpiTargetAdjustmentProposal,
+  sendKpiTargetAdjustmentApprovalEmail,
+} = require("../services/kpiTargetAdjustment.service");
 const {
   ensureKpiRatioSchema,
   ensureKpiAssistantConversationSchema,
@@ -1525,4 +1551,317 @@ router.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, r
     res.status(500).json({ error: "Failed to load monthly KPI history" });
   }
 });
+// Ported from the monolith's app.post("/redirect", ...) (index.js), which
+// saved submitted weekly KPI values + comments + corrective actions,
+// evaluated target-adjustment proposals and sent approval emails via a
+// raw HTML form post. This JSON equivalent receives an already-structured
+// `items[]` array instead of re-parsing `value_<id>` / `comment_<id>`
+// form fields, but preserves the per-item allocation lookup, the
+// kpi_result insert/update, evaluateAndCreateKpiTargetAdjustmentProposal,
+// syncActionPlanCorrectiveActionsForPeriod and email sending exactly.
+router.post("/api/responsibles/:responsibleId/kpi-results", async (req, res) => {
+  const { responsibleId: responsible_id } = req.params;
+
+  try {
+    const {
+      week,
+      calculation_mode: submittedCalculationMode,
+      frequency: submittedFrequency,
+      unit_id: submittedUnitId,
+      return_url: submittedReturnUrl,
+      items
+    } = req.body || {};
+
+    const requestedUnitId = normalizeOptionalIntegerInput(submittedUnitId);
+    const normalizedWeek = normalizeOptionalTextInput(week) || formatIsoDateValue(new Date());
+    const normalizedCalculationMode = normalizeOptionalTextInput(submittedCalculationMode);
+    const normalizedFrequency = normalizeOptionalTextInput(submittedFrequency);
+    const fallbackFormUrl = buildKpiFormUrl({
+      responsibleId: responsible_id,
+      week: normalizedWeek,
+      calculationMode: normalizedCalculationMode,
+      frequency: normalizedFrequency,
+      unitId: requestedUnitId
+    });
+    const kpiFormReturnUrl = sanitizeKpiFormReturnUrl(submittedReturnUrl, fallbackFormUrl);
+    const dashboardReturnUrlParam = kpiFormReturnUrl
+      ? `&return_url=${encodeURIComponent(kpiFormReturnUrl)}`
+      : "";
+    const resultDate = deriveKpiResultDate(normalizedWeek);
+    const periodType = deriveKpiResultPeriodType(normalizedWeek);
+    const recordedByPeopleId = await resolveRecordedByPeopleId(responsible_id);
+    const responsibleContext = await loadFormResponsibleContext(responsible_id, requestedUnitId);
+    const correctiveActionsEnabled = await canUseActionPlanCorrectiveActions();
+
+    const submittedItems = Array.isArray(items) ? items : [];
+    const defaultResponsibleName = responsibleContext.name || null;
+    const targetUpdates = [];
+    let correctiveActionsCount = 0;
+
+    for (const item of submittedItems) {
+      const allocationId = normalizeOptionalIntegerInput(item?.allocation_id);
+      const rawValueText = normalizeOptionalTextInput(item?.value);
+      if (!allocationId || rawValueText === null) continue;
+
+      const normalizedValue = normalizeOptionalNumericInput(rawValueText);
+      if (normalizedValue === null) {
+        throw createHttpError(400, "All KPI values must be numeric.");
+      }
+
+      const numericValue = Number(normalizedValue);
+      const allocationRes = await pool.query(
+        `
+        SELECT
+          kta.kpi_target_allocation_id,
+          kta.kpi_id,
+          kta.kpi_type,
+          kta.plant_id,
+          kta.unit_id,
+          kta.last_best_target,
+          kta.set_by_people_id,
+          kta.approved_by_people_id,
+          COALESCE(current_period_result.target_value, kta.target_value, k.target_value) AS effective_target_value,
+          COALESCE(kta.target_unit, k.unit) AS effective_unit,
+          COALESCE(current_period_result.lower_limit, kta.low_limit, k.low_limit) AS low_limit,
+          COALESCE(current_period_result.upper_limit, kta.high_limit, k.high_limit) AS high_limit,
+          k.tolerance_type,
+          k.low_tolerance,
+          k.up_tolerance,
+          k.target_direction,
+          k.target_auto_adjustment,
+          COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS kpi_name,
+          COALESCE(subject_link.subject_name, k.kpi_sub_title, k.kpi_name, 'KPI') AS subject_name
+        FROM public.kpi_target_allocation kta
+        JOIN public.kpi k ON k.kpi_id = kta.kpi_id
+        LEFT JOIN LATERAL (
+          SELECT
+            kr.target_value,
+            kr.lower_limit,
+            kr.upper_limit
+          FROM public.kpi_result kr
+          WHERE kr.kpi_target_allocation_id = kta.kpi_target_allocation_id
+            AND $2::text IS NOT NULL
+            AND (kr.week = $2 OR kr.period_label = $2)
+          ORDER BY
+            COALESCE(kr.result_date::timestamp, kr.recorded_at) DESC,
+            kr.recorded_at DESC,
+            kr.kpi_result_id DESC
+          LIMIT 1
+        ) current_period_result ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT s.subject_name
+          FROM public.subject_kpi sk
+          JOIN public.subject s
+            ON s.subject_id = sk.subject_id
+          WHERE sk.kpi_id = k.kpi_id
+          ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+          LIMIT 1
+        ) subject_link ON TRUE
+        WHERE kta.kpi_target_allocation_id = $1
+        LIMIT 1
+        `,
+        [allocationId, normalizedWeek]
+      );
+      if (!allocationRes.rows.length) continue;
+
+      const allocation = allocationRes.rows[0];
+      const kpiId = allocation.kpi_id;
+      const submissionStatusInfo = getDashboardSubmissionStatus({
+        value: numericValue,
+        target: allocation.effective_target_value,
+        unit: allocation.effective_unit,
+        low_limit: allocation.low_limit,
+        high_limit: allocation.high_limit,
+        tolerance_type: allocation.tolerance_type,
+        low_tolerance: allocation.low_tolerance,
+        up_tolerance: allocation.up_tolerance,
+        target_direction: allocation.target_direction,
+        subject: allocation.subject_name,
+        indicator_sub_title: allocation.kpi_name,
+        kpi_id: allocation.kpi_id
+      });
+      const computedResultStatus = submissionStatusInfo.isGood === false
+        ? "Needs attention"
+        : "On track";
+      const submittedActions = correctiveActionsEnabled
+        ? (Array.isArray(item?.corrective_actions) ? item.corrective_actions : []).map((ca) => ({
+          correctiveActionId: normalizeText(ca?.corrective_action_id),
+          rootCause: normalizeText(ca?.root_cause),
+          implementedSolution: normalizeText(ca?.implemented_solution),
+          dueDate: normalizeText(ca?.due_date),
+          estimatedDurationDays: normalizeCorrectiveActionEstimatedDurationDays(ca?.estimated_duration_days),
+          responsibleName:
+            normalizeText(ca?.responsible_name) ||
+            normalizeText(defaultResponsibleName),
+          importance: normalizeCorrectiveActionImportance(ca?.importance),
+          urgency: normalizeCorrectiveActionUrgency(ca?.urgency),
+          status: normalizeText(ca?.status) || "Open"
+        }))
+        : [];
+      const commentText = normalizeOptionalTextInput(item?.comment);
+      const existingResultRes = await pool.query(
+        `
+        SELECT kpi_result_id
+        FROM public.kpi_result
+        WHERE kpi_target_allocation_id = $1
+          AND kpi_id = $2
+          AND COALESCE(period_label, '') = $3
+        ORDER BY recorded_at DESC, kpi_result_id DESC
+        LIMIT 1
+        `,
+        [allocationId, kpiId, normalizedWeek]
+      );
+      const existingResultId = existingResultRes.rows[0]?.kpi_result_id || null;
+
+      if (existingResultId) {
+        await pool.query(
+          `
+          UPDATE public.kpi_result
+          SET
+            result_date = $2,
+            week = $3,
+            period_type = $4,
+            period_label = $5,
+            raw_value = $6,
+            lower_limit = $7,
+            upper_limit = $8,
+            target_value = $9,
+            best_new_target = $10,
+            unit = $11,
+            kpi_type = $12,
+            result_status = $13,
+            data_source = $14,
+            recorded_by_people_id = $15,
+            recorded_at = CURRENT_TIMESTAMP,
+            comments = $16
+          WHERE kpi_result_id = $1
+          `,
+          [
+            existingResultId,
+            resultDate,
+            normalizedWeek,
+            periodType,
+            normalizedWeek,
+            numericValue,
+            allocation.low_limit,
+            allocation.high_limit,
+            allocation.effective_target_value,
+            allocation.last_best_target,
+            allocation.effective_unit,
+            allocation.kpi_type,
+            computedResultStatus,
+            "Manual form",
+            recordedByPeopleId,
+            commentText
+          ]
+        );
+      } else {
+        await pool.query(
+          `
+          INSERT INTO public.kpi_result (
+            kpi_target_allocation_id,
+            kpi_id,
+            result_date,
+            week,
+            period_type,
+            period_label,
+            raw_value,
+            lower_limit,
+            upper_limit,
+            target_value,
+            best_new_target,
+            unit,
+            kpi_type,
+            result_status,
+            data_source,
+            recorded_by_people_id,
+            comments
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          `,
+          [
+            allocationId,
+            kpiId,
+            resultDate,
+            normalizedWeek,
+            periodType,
+            normalizedWeek,
+            numericValue,
+            allocation.low_limit,
+            allocation.high_limit,
+            allocation.effective_target_value,
+            allocation.last_best_target,
+            allocation.effective_unit,
+            allocation.kpi_type,
+            computedResultStatus,
+            "Manual form",
+            recordedByPeopleId,
+            commentText
+          ]
+        );
+      }
+
+      const targetProposal = await evaluateAndCreateKpiTargetAdjustmentProposal({
+        allocation,
+        allocationId,
+        kpiId,
+        actualValue: numericValue,
+        periodLabel: normalizedWeek,
+        triggeredByPeopleId:
+          normalizeOptionalIntegerInput(recordedByPeopleId) ||
+          normalizeOptionalIntegerInput(responsible_id)
+      });
+
+      if (targetProposal) {
+        targetUpdates.push(targetProposal);
+        sendKpiTargetAdjustmentApprovalEmail(targetProposal).catch((emailError) => {
+          console.error("KPI target adjustment approval email error:", emailError.message);
+        });
+      }
+
+      // -------------------------------------------------------
+      // Save the corrective actions for this KPI period in the Action Plan DB.
+      // -------------------------------------------------------
+      if (correctiveActionsEnabled) {
+        const syncResult = await syncActionPlanCorrectiveActionsForPeriod({
+          kpiTargetAllocationId: allocationId,
+          kpiId,
+          unitId: allocation.unit_id ?? allocation.plant_id,
+          periodLabel: normalizedWeek,
+          subject: allocation.subject_name,
+          kpiName: allocation.kpi_name,
+          actions: submittedActions,
+          responsibleContext
+        });
+
+        correctiveActionsCount += syncResult.savedCount || 0;
+      }
+    }
+
+    const notifications = ["KPI results saved successfully"];
+    if (targetUpdates.length > 0) {
+      notifications.push(
+        `${targetUpdates.length} target proposal${targetUpdates.length > 1 ? "s" : ""} created for manager approval`
+      );
+    }
+    if (correctiveActionsCount > 0) {
+      notifications.push(
+        `${correctiveActionsCount} corrective action${correctiveActionsCount > 1 ? "s" : ""} recorded`
+      );
+    }
+
+    res.json({
+      week: normalizedWeek,
+      notifications,
+      target_proposals_created: targetUpdates.length,
+      corrective_actions_recorded: correctiveActionsCount,
+      form_url: kpiFormReturnUrl,
+      dashboard_url: `/dashboard?responsible_id=${encodeURIComponent(responsible_id)}${dashboardReturnUrlParam}`
+    });
+  } catch (err) {
+    console.error("Error saving KPI results:", err);
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

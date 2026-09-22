@@ -1,12 +1,22 @@
 const { pool, actionPlanPool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
 const {
+  normalizeText,
   normalizeCorrectiveActionStatus,
+  normalizeCorrectiveActionImportance,
+  normalizeCorrectiveActionUrgency,
+  normalizeCorrectiveActionEstimatedDurationDays,
+  OPEN_CORRECTIVE_ACTION_STATUS,
+  CLOSED_CORRECTIVE_ACTION_STATUS,
   escapeHtml,
   sortCorrectiveActions,
   getLatestCorrectiveAction,
 } = require("./kpiShared.service");
-const { formatIsoDateValue } = require("../utils/weekPeriod");
+const {
+  formatIsoDateValue,
+  formatDateOnlyValue,
+  normalizeOptionalDateInput,
+} = require("../utils/weekPeriod");
 const { loadFormResponsibleContext } = require("../models/responsible.model");
 const {
   getCanonicalKpiSubmissionFrequency,
@@ -797,6 +807,849 @@ const generateEmailHtml = ({
   </body></html>`;
 };
 
+// ============================================================
+// Ported from the monolith's app.post("/redirect", ...) handler
+// and its Action Plan corrective-action sync helpers (index.js).
+// Used by the JSON equivalent
+// POST /api/responsibles/:responsibleId/kpi-results and by the
+// corrective-action submission endpoints.
+// ============================================================
+
+const hasMeaningfulCorrectiveActionInput = (action = {}) =>
+  Boolean(
+    normalizeText(action.rootCause ?? action.root_cause) &&
+    normalizeText(action.implementedSolution ?? action.implemented_solution) &&
+    normalizeText(action.dueDate ?? action.due_date) &&
+    normalizeText(action.responsibleName ?? action.responsible)
+  );
+
+const buildActionPlanSubjectMetadata = ({
+  kpiTargetAllocationId,
+  kpiId,
+  periodLabel,
+  subject,
+  kpiName,
+  subjectCode
+}) => {
+  const subjectLabel =
+    normalizeOptionalTextInput(subject) ||
+    normalizeOptionalTextInput(kpiName) ||
+    `KPI ${kpiId}`;
+  const kpiLabel =
+    normalizeOptionalTextInput(kpiName) ||
+    subjectLabel;
+  const periodText =
+    normalizeOptionalTextInput(periodLabel) ||
+    formatIsoDateValue(new Date()) ||
+    "current period";
+  const normalizedSubjectCode =
+    normalizeOptionalTextInput(subjectCode) ||
+    buildActionPlanSubjectCode({
+      kpiTargetAllocationId,
+      kpiId,
+      periodLabel
+    }) ||
+    "";
+
+  return {
+    title: subjectLabel,
+    description:
+      `Corrective actions captured from the KPI form for subject "${subjectLabel}" ` +
+      `and KPI "${kpiLabel}". Shared subject row reused for the same responsible across periods.`
+  };
+};
+
+const actionPlanResponsibleEmailCache = new Map();
+
+const findResponsibleEmailByDisplayName = async (responsibleName) => {
+  const normalizedResponsibleName = normalizeOptionalTextInput(responsibleName);
+  if (!normalizedResponsibleName) return null;
+
+  const cacheKey = normalizedResponsibleName.toLowerCase();
+  if (actionPlanResponsibleEmailCache.has(cacheKey)) {
+    return actionPlanResponsibleEmailCache.get(cacheKey);
+  }
+
+  const peopleResult = await pool.query(
+    `
+    SELECT p.email
+    FROM public.people p
+    WHERE
+      LOWER(TRIM(CONCAT_WS(' ', COALESCE(p.first_name, ''), COALESCE(p.name, '')))) = LOWER($1)
+      OR LOWER(COALESCE(p.name, '')) = LOWER($1)
+      OR LOWER(COALESCE(p.first_name, '')) = LOWER($1)
+    ORDER BY
+      CASE
+        WHEN LOWER(TRIM(CONCAT_WS(' ', COALESCE(p.first_name, ''), COALESCE(p.name, '')))) = LOWER($1) THEN 0
+        WHEN LOWER(COALESCE(p.name, '')) = LOWER($1) THEN 1
+        WHEN LOWER(COALESCE(p.first_name, '')) = LOWER($1) THEN 2
+        ELSE 3
+      END,
+      p.people_id ASC
+    LIMIT 1
+    `,
+    [normalizedResponsibleName]
+  );
+
+  let resolvedEmail = normalizeOptionalTextInput(peopleResult.rows[0]?.email);
+
+  if (!resolvedEmail) {
+    try {
+      const legacyResponsibleResult = await pool.query(
+        `
+        SELECT email
+        FROM public."Responsible"
+        WHERE LOWER(COALESCE(name, '')) = LOWER($1)
+        ORDER BY responsible_id ASC
+        LIMIT 1
+        `,
+        [normalizedResponsibleName]
+      );
+
+      resolvedEmail = normalizeOptionalTextInput(legacyResponsibleResult.rows[0]?.email);
+    } catch (error) {
+      resolvedEmail = null;
+    }
+  }
+
+  actionPlanResponsibleEmailCache.set(cacheKey, resolvedEmail);
+  return resolvedEmail;
+};
+
+const resolveActionPlanResponsibleEmail = async ({
+  responsibleName,
+  responsibleContext
+}) => {
+  const normalizedResponsibleName = normalizeOptionalTextInput(responsibleName);
+  const normalizedContextName = normalizeOptionalTextInput(responsibleContext?.name);
+  const normalizedContextEmail = normalizeOptionalTextInput(responsibleContext?.email);
+
+  if (normalizedResponsibleName && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedResponsibleName)) {
+    return normalizedResponsibleName;
+  }
+
+  if (
+    normalizedContextEmail &&
+    (!normalizedResponsibleName ||
+      !normalizedContextName ||
+      normalizedResponsibleName.toLowerCase() === normalizedContextName.toLowerCase())
+  ) {
+    return normalizedContextEmail;
+  }
+
+  return findResponsibleEmailByDisplayName(normalizedResponsibleName);
+};
+
+const getActionPlanSubjectOwnerIdentifier = (responsibleContext = null) => (
+  normalizeOptionalTextInput(responsibleContext?.email) ||
+  normalizeOptionalTextInput(responsibleContext?.name) ||
+  null
+);
+
+const findActionPlanSubjectId = async ({
+  subjectTitle = null,
+  insertedBy = null,
+  subjectCode = null,
+  descriptionSearchValue = null
+} = {}) => {
+  const normalizedSubjectTitle = normalizeOptionalTextInput(subjectTitle);
+  const normalizedInsertedBy = normalizeOptionalTextInput(insertedBy);
+  const normalizedSubjectCode = normalizeOptionalTextInput(subjectCode);
+  const normalizedDescriptionSearchValue = normalizeOptionalTextInput(descriptionSearchValue);
+
+  if (normalizedSubjectTitle && normalizedInsertedBy) {
+    const ownedSubjectResult = await actionPlanPool.query(
+      `
+      SELECT id
+      FROM public.sujet
+      WHERE parent_sujet_id IS NULL
+        AND LOWER(BTRIM(COALESCE(titre, ''))) = LOWER($1)
+        AND LOWER(BTRIM(COALESCE(inserted_by, ''))) = LOWER($2)
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [normalizedSubjectTitle, normalizedInsertedBy]
+    );
+
+    const ownedSubjectId = normalizeOptionalIntegerInput(ownedSubjectResult.rows[0]?.id);
+    if (ownedSubjectId) {
+      return ownedSubjectId;
+    }
+
+    const blankOwnerSubjectResult = await actionPlanPool.query(
+      `
+      SELECT id
+      FROM public.sujet
+      WHERE parent_sujet_id IS NULL
+        AND LOWER(BTRIM(COALESCE(titre, ''))) = LOWER($1)
+        AND COALESCE(BTRIM(COALESCE(inserted_by, '')), '') = ''
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [normalizedSubjectTitle]
+    );
+
+    const blankOwnerSubjectId = normalizeOptionalIntegerInput(blankOwnerSubjectResult.rows[0]?.id);
+    if (blankOwnerSubjectId) {
+      return blankOwnerSubjectId;
+    }
+  }
+
+  if (!normalizedSubjectCode && !normalizedDescriptionSearchValue) {
+    return null;
+  }
+
+  const result = await actionPlanPool.query(
+    `
+    SELECT id
+    FROM public.sujet
+    WHERE
+      ($1::text IS NOT NULL AND code = $1)
+      OR ($2::text IS NOT NULL AND COALESCE(description, '') LIKE $2)
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [normalizedSubjectCode, normalizedDescriptionSearchValue]
+  );
+
+  return normalizeOptionalIntegerInput(result.rows[0]?.id);
+};
+
+const backfillActionPlanActionScopeForSubject = async (sujetId) => {
+  const normalizedSujetId = normalizeOptionalIntegerInput(sujetId);
+  if (!normalizedSujetId) return;
+
+  const actionsRes = await actionPlanPool.query(
+    `
+    SELECT
+      a.id,
+      a.kpi_id,
+      a.kpi_target_allocation_id,
+      a.period_label,
+      s.code AS sujet_code,
+      s.description AS sujet_description
+    FROM public.action a
+    JOIN public.sujet s
+      ON s.id = a.sujet_id
+    WHERE a.sujet_id = $1
+      AND LOWER(COALESCE(a.type, 'action')) = 'action'
+      AND (
+        COALESCE(BTRIM(COALESCE(a.kpi_id, '')), '') = ''
+        OR COALESCE(BTRIM(COALESCE(a.kpi_target_allocation_id, '')), '') = ''
+        OR COALESCE(BTRIM(COALESCE(a.period_label, '')), '') = ''
+      )
+    ORDER BY a.id ASC
+    `,
+    [normalizedSujetId]
+  );
+
+  for (const row of actionsRes.rows) {
+    const { subjectInfo, kpiTargetAllocationId, periodLabel } = resolveActionPlanActionScope(row);
+    const resolvedKpiId =
+      normalizeOptionalIntegerInput(row.kpi_id) ||
+      normalizeOptionalIntegerInput(subjectInfo?.kpiId);
+
+    if (!resolvedKpiId && !kpiTargetAllocationId && !periodLabel) {
+      continue;
+    }
+
+    await actionPlanPool.query(
+      `
+      UPDATE public.action
+      SET
+        kpi_id = CASE
+          WHEN COALESCE(BTRIM(COALESCE(kpi_id, '')), '') = '' AND $2::text IS NOT NULL THEN $2::text
+          ELSE kpi_id
+        END,
+        kpi_target_allocation_id = CASE
+          WHEN COALESCE(BTRIM(COALESCE(kpi_target_allocation_id, '')), '') = '' AND $3::text IS NOT NULL THEN $3::text
+          ELSE kpi_target_allocation_id
+        END,
+        period_label = CASE
+          WHEN COALESCE(BTRIM(COALESCE(period_label, '')), '') = '' AND $4::text IS NOT NULL THEN $4::text
+          ELSE period_label
+        END
+      WHERE id = $1
+      `,
+      [
+        normalizeOptionalIntegerInput(row.id),
+        Number.isInteger(resolvedKpiId) ? String(resolvedKpiId) : null,
+        Number.isInteger(kpiTargetAllocationId) ? String(kpiTargetAllocationId) : null,
+        normalizeOptionalTextInput(periodLabel)
+      ]
+    );
+  }
+};
+
+const loadActionPlanActionIdsForScope = async ({
+  sujetId,
+  kpiTargetAllocationId,
+  periodLabel
+}) => {
+  const normalizedSujetId = normalizeOptionalIntegerInput(sujetId);
+  if (!normalizedSujetId) {
+    return [];
+  }
+
+  const normalizedAllocationId = normalizeOptionalIntegerInput(kpiTargetAllocationId);
+  const normalizedPeriodLabel = normalizeOptionalTextInput(periodLabel) || "";
+  if (!normalizedAllocationId || !normalizedPeriodLabel) {
+    return [];
+  }
+
+  const existingActionsRes = await actionPlanPool.query(
+    `
+    SELECT id
+    FROM public.action
+    WHERE sujet_id = $1
+      AND LOWER(COALESCE(type, 'action')) = 'action'
+      AND COALESCE(BTRIM(COALESCE(kpi_target_allocation_id, '')), '') = $2
+      AND COALESCE(BTRIM(COALESCE(period_label, '')), '') = $3
+    ORDER BY id ASC
+    `,
+    [normalizedSujetId, String(normalizedAllocationId), normalizedPeriodLabel]
+  );
+
+  return existingActionsRes.rows
+    .map((row) => normalizeOptionalIntegerInput(row.id))
+    .filter((value) => Number.isInteger(value));
+};
+
+const deleteActionPlanSubjectIfUnused = async (sujetId) => {
+  const normalizedSujetId = normalizeOptionalIntegerInput(sujetId);
+  if (!normalizedSujetId) return;
+
+  const remainingActionsRes = await actionPlanPool.query(
+    `
+    SELECT COUNT(*)::integer AS action_count
+    FROM public.action
+    WHERE sujet_id = $1
+      AND LOWER(COALESCE(type, 'action')) = 'action'
+    `,
+    [normalizedSujetId]
+  );
+
+  if (Number(remainingActionsRes.rows[0]?.action_count || 0) > 0) {
+    return;
+  }
+
+  await actionPlanPool.query(
+    `DELETE FROM public.sujet WHERE id = $1`,
+    [normalizedSujetId]
+  );
+};
+
+const ensureActionPlanSubject = async ({
+  kpiTargetAllocationId,
+  kpiId,
+  periodLabel,
+  subject,
+  kpiName,
+  insertedBy
+}) => {
+  const normalizedInsertedBy = normalizeOptionalTextInput(insertedBy);
+  const subjectCode = buildActionPlanSubjectCode({
+    kpiTargetAllocationId,
+    kpiId,
+    periodLabel
+  });
+
+  const metadata = buildActionPlanSubjectMetadata({
+    kpiTargetAllocationId,
+    kpiId,
+    periodLabel,
+    subject,
+    kpiName,
+    subjectCode
+  });
+
+  const existingSubjectId = await findActionPlanSubjectId({
+    subjectTitle: metadata.title,
+    insertedBy: normalizedInsertedBy,
+    subjectCode,
+    descriptionSearchValue: buildActionPlanSubjectDescriptionSearchValue(subjectCode)
+  });
+  if (existingSubjectId) {
+    await backfillActionPlanActionScopeForSubject(existingSubjectId);
+
+    await actionPlanPool.query(
+      `
+      UPDATE public.sujet
+      SET
+        code = NULL,
+        titre = $2,
+        description = $3,
+        updated_at = NOW(),
+        inserted_by = CASE
+          WHEN COALESCE(BTRIM(COALESCE(inserted_by, '')), '') = '' AND $4::text IS NOT NULL THEN $4::text
+          ELSE inserted_by
+        END
+      WHERE id = $1
+      `,
+      [existingSubjectId, metadata.title, metadata.description, normalizedInsertedBy]
+    );
+
+    return {
+      sujetId: existingSubjectId,
+      subjectCode
+    };
+  }
+
+  const insertedSubjectRes = await actionPlanPool.query(
+    `
+    INSERT INTO public.sujet (code, titre, description, inserted_by)
+    VALUES ($1, $2, $3, $4)
+    RETURNING id
+    `,
+    [null, metadata.title, metadata.description, normalizedInsertedBy]
+  );
+
+  return {
+    sujetId: normalizeOptionalIntegerInput(insertedSubjectRes.rows[0]?.id),
+    subjectCode
+  };
+};
+
+const syncActionPlanCorrectiveActionsForPeriod = async ({
+  kpiTargetAllocationId,
+  kpiId,
+  unitId,
+  periodLabel,
+  subject,
+  kpiName,
+  actions = [],
+  responsibleContext = null
+}) => {
+  const subjectCode = buildActionPlanSubjectCode({
+    kpiTargetAllocationId,
+    kpiId,
+    periodLabel
+  });
+  const subjectDescriptionSearchValue = buildActionPlanSubjectDescriptionSearchValue(subjectCode);
+
+  if (!subjectCode || !(await canUseActionPlanCorrectiveActions())) {
+    return { savedCount: 0, deletedCount: 0 };
+  }
+
+  await ensureActionPlanCorrectiveActionSchema();
+
+  const submittedActions = Array.isArray(actions) ? actions : [];
+  const meaningfulActions = submittedActions.filter(hasMeaningfulCorrectiveActionInput);
+  const subjectOwnerIdentifier = getActionPlanSubjectOwnerIdentifier(responsibleContext);
+  const metadata = buildActionPlanSubjectMetadata({
+    kpiTargetAllocationId,
+    kpiId,
+    periodLabel,
+    subject,
+    kpiName,
+    subjectCode
+  });
+
+  let sujetId = await findActionPlanSubjectId({
+    subjectTitle: metadata.title,
+    insertedBy: subjectOwnerIdentifier,
+    subjectCode,
+    descriptionSearchValue: subjectDescriptionSearchValue
+  });
+
+  if (sujetId) {
+    await backfillActionPlanActionScopeForSubject(sujetId);
+  }
+
+  const existingActionIds = new Set(
+    await loadActionPlanActionIdsForScope({
+      sujetId,
+      kpiTargetAllocationId,
+      periodLabel
+    })
+  );
+
+  if (!meaningfulActions.length) {
+    if (!sujetId || !existingActionIds.size) {
+      return { savedCount: 0, deletedCount: 0 };
+    }
+
+    await actionPlanPool.query(
+      `
+      DELETE FROM public.action
+      WHERE sujet_id = $1
+        AND LOWER(COALESCE(type, 'action')) = 'action'
+        AND COALESCE(BTRIM(COALESCE(kpi_target_allocation_id, '')), '') = $2
+        AND COALESCE(BTRIM(COALESCE(period_label, '')), '') = $3
+      `,
+      [
+        sujetId,
+        String(normalizeOptionalIntegerInput(kpiTargetAllocationId)),
+        normalizeOptionalTextInput(periodLabel) || ""
+      ]
+    );
+    await deleteActionPlanSubjectIfUnused(sujetId);
+
+    return {
+      savedCount: 0,
+      deletedCount: existingActionIds.size
+    };
+  }
+
+  const ensuredSubject = await ensureActionPlanSubject({
+    kpiTargetAllocationId,
+    kpiId,
+    periodLabel,
+    subject,
+    kpiName,
+    insertedBy: subjectOwnerIdentifier
+  });
+  sujetId = normalizeOptionalIntegerInput(ensuredSubject?.sujetId);
+  if (!sujetId) {
+    return { savedCount: 0, deletedCount: 0 };
+  }
+
+  let savedCount = 0;
+  const keptActionIds = new Set();
+  const actionPlanKpiId = normalizeOptionalIntegerInput(kpiId);
+  const actionPlanKpiIdValue = Number.isInteger(actionPlanKpiId)
+    ? String(actionPlanKpiId)
+    : null;
+
+  const actionPlanUnitId = normalizeOptionalIntegerInput(unitId);
+  const actionPlanUnitIdValue = Number.isInteger(actionPlanUnitId)
+    ? String(actionPlanUnitId)
+    : null;
+  const actionPlanAllocationId = normalizeOptionalIntegerInput(kpiTargetAllocationId);
+  const actionPlanAllocationIdValue = Number.isInteger(actionPlanAllocationId)
+    ? String(actionPlanAllocationId)
+    : null;
+  const normalizedActionPlanPeriodLabel = normalizeOptionalTextInput(periodLabel) || null;
+
+  for (let index = 0; index < meaningfulActions.length; index += 1) {
+    const action = meaningfulActions[index];
+    const actionId = normalizeOptionalIntegerInput(
+      action.correctiveActionId ??
+      action.corrective_action_id ??
+      action.id
+    );
+
+    if (actionId && !existingActionIds.has(actionId)) {
+      continue;
+    }
+
+    const status =
+      normalizeCorrectiveActionStatus(action.status, OPEN_CORRECTIVE_ACTION_STATUS) ||
+      OPEN_CORRECTIVE_ACTION_STATUS;
+    const responsibleName =
+      normalizeOptionalTextInput(action.responsibleName ?? action.responsible) ||
+      normalizeOptionalTextInput(responsibleContext?.name);
+    const responsibleEmail = await resolveActionPlanResponsibleEmail({
+      responsibleName,
+      responsibleContext
+    });
+    const demandeur =
+      normalizeOptionalTextInput(responsibleContext?.name) ||
+      normalizeOptionalTextInput(responsibleContext?.email);
+    const emailDemandeur =
+      normalizeOptionalTextInput(responsibleContext?.email);
+
+    const implementedSolution =
+      normalizeOptionalTextInput(action.implementedSolution ?? action.implemented_solution);
+    const rootCause =
+      normalizeOptionalTextInput(action.rootCause ?? action.root_cause);
+    const estimatedDurationDays = normalizeCorrectiveActionEstimatedDurationDays(
+      action.estimatedDurationDays ?? action.estimated_duration_days
+    );
+    const importance = normalizeCorrectiveActionImportance(action.importance);
+    const urgency = normalizeCorrectiveActionUrgency(action.urgency);
+    const values = [
+      implementedSolution,
+      rootCause,
+      status,
+      responsibleName,
+      normalizeOptionalDateInput(action.dueDate ?? action.due_date),
+      estimatedDurationDays,
+      importance,
+      urgency,
+      index + 1,
+      responsibleEmail,
+      demandeur,
+      emailDemandeur,
+      actionPlanKpiIdValue,
+      actionPlanUnitIdValue,
+      actionPlanAllocationIdValue,
+      normalizedActionPlanPeriodLabel
+    ];
+
+    if (actionId && existingActionIds.has(actionId)) {
+      const updatedActionRes = await actionPlanPool.query(
+        `
+        UPDATE public.action
+        SET
+          titre = $2,
+          description = $3,
+          status = $4,
+          responsable = $5,
+          due_date = $6,
+          estimated_duration_days = $7,
+          importance = $8,
+          urgency = $9,
+          ordre = $10,
+          email_responsable = $11,
+          demandeur = $12,
+          email_demandeur = $13,
+          kpi_id = $14,
+          unit_id = $15,
+          kpi_target_allocation_id = $16,
+          period_label = $17,
+          type = 'action',
+          updated_at = NOW(),
+          closed_date = CASE
+            WHEN LOWER($4::text) = 'closed' THEN COALESCE(closed_date, CURRENT_DATE)
+            ELSE NULL
+          END
+        WHERE id = $1
+         AND sujet_id = $18
+        RETURNING id
+        `,
+        [actionId, ...values, sujetId]
+      );
+
+      const updatedActionId = normalizeOptionalIntegerInput(updatedActionRes.rows[0]?.id);
+      if (updatedActionId) {
+        keptActionIds.add(updatedActionId);
+        savedCount += 1;
+        continue;
+      }
+    }
+
+    const insertedActionRes = await actionPlanPool.query(
+      `
+    INSERT INTO public.action (
+      sujet_id,
+      type,
+      titre,
+      description,
+      status,
+      responsable,
+      due_date,
+      estimated_duration_days,
+      importance,
+      urgency,
+      ordre,
+      email_responsable,
+      demandeur,
+      email_demandeur,
+      kpi_id,
+      unit_id,
+      kpi_target_allocation_id,
+      period_label,
+      closed_date
+    )
+      VALUES (
+        $1,
+        'action',
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        $12,
+        $13,
+        $14,
+        $15,
+        $16,
+        $17,
+        CASE
+          WHEN LOWER($4::text) = 'closed' THEN CURRENT_DATE
+          ELSE NULL
+        END
+      )
+      RETURNING id
+      `,
+      [sujetId, ...values]
+    );
+
+    const insertedActionId = normalizeOptionalIntegerInput(insertedActionRes.rows[0]?.id);
+    if (insertedActionId) {
+      keptActionIds.add(insertedActionId);
+      savedCount += 1;
+    }
+  }
+
+  const staleActionIds = Array.from(existingActionIds).filter(
+    (id) => !keptActionIds.has(id)
+  );
+
+  if (staleActionIds.length) {
+    await actionPlanPool.query(
+      `DELETE FROM public.action WHERE sujet_id = $1 AND id = ANY($2::bigint[])`,
+      [sujetId, staleActionIds]
+    );
+  }
+
+  return {
+    savedCount,
+    deletedCount: staleActionIds.length
+  };
+};
+
+// ============================================================
+// Legacy public.corrective_actions table helpers, ported from
+// the monolith's app.post("/submit-corrective-action", ...) and
+// app.post("/submit-bulk-corrective-actions", ...) handlers.
+// ============================================================
+
+let legacyCorrectiveActionsSchemaPromise = null;
+
+const ensureLegacyCorrectiveActionsSchema = async () => {
+  if (!legacyCorrectiveActionsSchemaPromise) {
+    legacyCorrectiveActionsSchemaPromise = (async () => {
+      if (!(await hasPublicTable("corrective_actions"))) {
+        return false;
+      }
+
+      await pool.query(`
+        ALTER TABLE public.corrective_actions
+        ADD COLUMN IF NOT EXISTS estimated_duration_days INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.corrective_actions
+        ADD COLUMN IF NOT EXISTS importance VARCHAR(50)
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.corrective_actions
+        ADD COLUMN IF NOT EXISTS urgency VARCHAR(50)
+      `);
+
+      return true;
+    })().catch((error) => {
+      legacyCorrectiveActionsSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return legacyCorrectiveActionsSchemaPromise;
+};
+
+// ============================================================
+// upsertCorrectiveAction — saves root_cause, implemented_solution,
+// evidence into corrective_actions table for a given kpi/week
+// ============================================================
+const upsertCorrectiveAction = async (
+  responsibleId,
+  kpiId,
+  week,
+  {
+    correctiveActionId,
+    rootCause,
+    implementedSolution,
+    dueDate,
+    estimatedDurationDays,
+    responsibleName,
+    importance,
+    urgency,
+    status,
+    demandeur
+  }
+) => {
+  try {
+    await ensureLegacyCorrectiveActionsSchema();
+
+    const normalizedPayload = {
+      rootCause: normalizeText(rootCause),
+      implementedSolution: normalizeText(implementedSolution),
+      dueDate: normalizeText(dueDate),
+      estimatedDurationDays: normalizeCorrectiveActionEstimatedDurationDays(estimatedDurationDays),
+      responsibleName: normalizeText(responsibleName),
+      importance: normalizeCorrectiveActionImportance(importance),
+      urgency: normalizeCorrectiveActionUrgency(urgency),
+      status: normalizeCorrectiveActionStatus(status),
+      demandeur: normalizeText(demandeur)
+    };
+    let resolvedStatus = normalizedPayload.status || "Open";
+
+    if (normalizeText(correctiveActionId) && !normalizedPayload.status) {
+      const existingStatusRes = await pool.query(
+        `SELECT status
+         FROM public.corrective_actions
+         WHERE corrective_action_id = $1
+         LIMIT 1`,
+        [correctiveActionId]
+      );
+      resolvedStatus = normalizeText(existingStatusRes.rows[0]?.status) || "Open";
+    }
+
+    if (normalizeText(correctiveActionId)) {
+      const result = await pool.query(
+        `UPDATE public.corrective_actions
+     SET root_cause = $2::text,
+       implemented_solution = $3::text,
+       due_date = $4::date,
+       estimated_duration_days = $5::integer,
+       responsible = $6::text,
+       importance = $7::text,
+       urgency = $8::text,
+       status = $9::text,
+       demandeur = $10::text,
+       updated_date = NOW()
+      WHERE corrective_action_id = $1
+       RETURNING corrective_action_id`,
+        [
+          correctiveActionId,
+          normalizedPayload.rootCause,
+          normalizedPayload.implementedSolution,
+          normalizedPayload.dueDate,
+          normalizedPayload.estimatedDurationDays,
+          normalizedPayload.responsibleName,
+          normalizedPayload.importance,
+          normalizedPayload.urgency,
+          resolvedStatus,
+          normalizedPayload.demandeur
+        ]
+      );
+
+      if (result.rowCount > 0) {
+        return true;
+      }
+    }
+
+    await pool.query(
+      `INSERT INTO public.corrective_actions
+   (
+     responsible_id, kpi_id, week,
+     root_cause, implemented_solution,
+     due_date, estimated_duration_days, responsible, importance, urgency, status, demandeur
+   )
+   VALUES (
+     $1,$2,$3,$4::text,$5::text,$6::date,$7::integer,$8::text,$9::text,$10::text,$11::text,$12::text
+   )`,
+      [
+        responsibleId,
+        kpiId,
+        week,
+        normalizedPayload.rootCause,
+        normalizedPayload.implementedSolution,
+        normalizedPayload.dueDate,
+        normalizedPayload.estimatedDurationDays,
+        normalizedPayload.responsibleName,
+        normalizedPayload.importance,
+        normalizedPayload.urgency,
+        resolvedStatus,
+        normalizedPayload.demandeur
+      ]
+    );
+
+    return true;
+  } catch (err) {
+    console.error("upsertCorrectiveAction error:", err.message);
+    return false;
+  }
+};
+
 module.exports = {
   hasPublicTable,
   hasActionPlanTable,
@@ -809,4 +1662,7 @@ module.exports = {
   loadActionPlanCorrectiveActionMaps,
   getResponsibleWithKPIs,
   generateEmailHtml,
+  syncActionPlanCorrectiveActionsForPeriod,
+  ensureLegacyCorrectiveActionsSchema,
+  upsertCorrectiveAction,
 };

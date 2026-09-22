@@ -6,6 +6,9 @@ const {
   normalizeText,
   inferKpiDirection,
   normalizeCorrectiveActionStatus,
+  normalizeCorrectiveActionEstimatedDurationDays,
+  normalizeCorrectiveActionImportance,
+  normalizeCorrectiveActionUrgency,
 } = require("../services/kpiShared.service");
 const { getOpenAIClient } = require("../config/openai");
 const {
@@ -18,6 +21,8 @@ const {
   hasPublicTable,
   canUseActionPlanCorrectiveActions,
   updateActionPlanCorrectiveActionStatus,
+  ensureLegacyCorrectiveActionsSchema,
+  upsertCorrectiveAction,
 } = require("../services/actionPlan.service");
 
 router.get("/generate-ca-suggestion", async (req, res) => {
@@ -349,4 +354,127 @@ router.post("/api/corrective-actions/:correctiveActionId/status", async (req, re
     res.status(500).json({ error: "Failed to update corrective action status" });
   }
 });
+// Ported from the monolith's app.post("/submit-corrective-action", ...)
+// (index.js). The original read its fields off a raw HTML form post;
+// this JSON version receives them directly in the request body.
+router.post("/api/corrective-actions/submit", async (req, res) => {
+  try {
+    const {
+      responsible_id,
+      kpi_id,
+      week,
+      corrective_action_id,
+      root_cause,
+      implemented_solution,
+      due_date,
+      estimated_duration_days,
+      responsible,
+      importance,
+      urgency
+    } = req.body || {};
+
+    if (!responsible_id || !kpi_id || !week) {
+      return res.status(400).json({ error: "Missing responsible_id, kpi_id, or week" });
+    }
+
+    const saved = await upsertCorrectiveAction(responsible_id, kpi_id, week, {
+      correctiveActionId: normalizeText(corrective_action_id),
+      rootCause: normalizeText(root_cause),
+      implementedSolution: normalizeText(implemented_solution),
+      dueDate: due_date || null,
+      estimatedDurationDays: estimated_duration_days,
+      responsibleName: normalizeText(responsible),
+      importance,
+      urgency,
+      status: normalizeCorrectiveActionStatus(req.body?.status),
+      demandeur: normalizeText(req.body?.demandeur)
+    });
+
+    if (!saved) {
+      return res.status(500).json({ error: "Could not save corrective action" });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error submitting corrective action:", err);
+    res.status(500).json({ error: "Could not save corrective action" });
+  }
+});
+
+// Ported from the monolith's app.post("/submit-bulk-corrective-actions", ...)
+// (index.js), preserving the exact UPDATE ... status = CASE SQL and the
+// "completed" counting condition. The original parsed HTML form fields
+// named `root_cause_<id>`, `solution_<id>`, etc.; this JSON version
+// receives them directly in the `actions[]` array instead.
+router.post("/api/corrective-actions/submit-bulk", async (req, res) => {
+  try {
+    await ensureLegacyCorrectiveActionsSchema();
+
+    const { week, actions } = req.body || {};
+    const submittedActions = Array.isArray(actions) ? actions : [];
+    let completedCount = 0;
+
+    for (const action of submittedActions) {
+      const caId = action?.corrective_action_id;
+      const rootCause = normalizeText(action?.root_cause);
+      const solution = normalizeText(action?.implemented_solution);
+      const dueDate = action?.due_date || null;
+      const estimatedDurationDays = normalizeCorrectiveActionEstimatedDurationDays(
+        action?.estimated_duration_days
+      );
+      const responsibleName = normalizeText(action?.responsible);
+      const importance = normalizeCorrectiveActionImportance(action?.importance);
+      const urgency = normalizeCorrectiveActionUrgency(action?.urgency);
+      if (
+        rootCause ||
+        solution ||
+        dueDate ||
+        responsibleName ||
+        estimatedDurationDays !== null ||
+        importance ||
+        urgency
+      ) {
+        await pool.query(
+          `UPDATE public.corrective_actions
+           SET root_cause=$1,
+               implemented_solution=$2,
+               due_date=$3::date,
+               estimated_duration_days=$4::integer,
+               responsible=$5::text,
+               importance=$6::text,
+               urgency=$7::text,
+               status = CASE
+                 WHEN $1::text IS NOT NULL
+                  AND $2::text IS NOT NULL
+                  AND $3::date IS NOT NULL
+                  AND NULLIF(BTRIM($5::text), '') IS NOT NULL
+                 THEN 'Waiting for validation'
+                 ELSE status
+               END,
+               updated_date=NOW()
+           WHERE corrective_action_id=$8`,
+          [
+            rootCause,
+            solution,
+            dueDate,
+            estimatedDurationDays,
+            responsibleName,
+            importance,
+            urgency,
+            caId
+          ]
+        );
+        if (rootCause && solution && dueDate && responsibleName) {
+          completedCount++;
+        }
+      }
+    }
+
+    res.json({ completed_count: completedCount, week: week || null });
+  } catch (err) {
+    console.error("Error submitting bulk corrective actions:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
