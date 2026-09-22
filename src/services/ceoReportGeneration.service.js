@@ -1,7 +1,7 @@
 const cron = require("node-cron");
 const { pool, actionPlanPool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
-const { normalizeOptionalDateInput, formatIsoDateValue } = require("../utils/weekPeriod");
+const { normalizeOptionalDateInput, formatIsoDateValue, buildTimeZoneDateContext } = require("../utils/weekPeriod");
 const { createTransporter } = require("../config/mailer");
 const { getPeopleDisplayName } = require("../models/kpi.model");
 const { loadFormResponsibleContext } = require("../models/responsible.model");
