@@ -32,7 +32,10 @@ const {
   normalizeCorrectiveActionEstimatedDurationDays,
   normalizeCorrectiveActionImportance,
   normalizeCorrectiveActionUrgency,
+  isPercentageUnit,
+  normalizeMetricNumberByUnit,
 } = require("../services/kpiShared.service");
+const { getCurrentFormWeek } = require("../services/ceoReportGeneration.service");
 const {
   canUseActionPlanCorrectiveActions,
   syncActionPlanCorrectiveActionsForPeriod,
@@ -1861,6 +1864,263 @@ router.post("/api/responsibles/:responsibleId/kpi-results", async (req, res) => 
   } catch (err) {
     console.error("Error saving KPI results:", err);
     res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// JSON equivalent of the original GET /dashboard HTML page (Etape 2). Mirrors
+// its exact SQL (ranked_results over kpi_result/kpi_target_allocation/kpi,
+// latest row per allocation per calendar month) and its month-grouping logic,
+// but returns JSON instead of a rendered page.
+router.get("/api/responsibles/:responsibleId/dashboard", async (req, res) => {
+  try {
+    const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
+    const requestedFormReturnUrl = sanitizeKpiFormReturnUrl(req.query?.return_url);
+    if (!responsibleId) {
+      return res.status(400).json({ error: "Missing responsible_id" });
+    }
+
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
+
+    if (!responsiblePeopleId) {
+      throw createHttpError(404, "Responsible not found");
+    }
+
+    const responsible = {
+      name: responsibleContext?.name || `Person #${responsiblePeopleId}`,
+      plant_name: responsibleContext?.plant_name || "Allocated scope",
+      department_name: responsibleContext?.department_name || ""
+    };
+
+    const kpiRes = await pool.query(
+      `
+ WITH ranked_results AS (
+  SELECT
+    kr.kpi_result_id,
+    kr.kpi_target_allocation_id AS kpi_values_id,
+    kr.kpi_target_allocation_id,
+    kr.kpi_id,
+    kr.result_date,
+    kr.week,
+    kr.period_label,
+    kr.raw_value AS value,
+    kr.lower_limit AS result_low_limit,
+    kr.upper_limit AS result_high_limit,
+    kr.target_value AS result_target_value,
+    kr.unit AS result_unit,
+    kr.recorded_at AS updated_at,
+    DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)) AS month_bucket,
+    ROW_NUMBER() OVER (
+      PARTITION BY DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)), kr.kpi_target_allocation_id
+      ORDER BY COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC, kr.kpi_result_id DESC
+    ) AS rn
+  FROM public.kpi_result kr
+  JOIN public.kpi_target_allocation kta
+    ON kta.kpi_target_allocation_id = kr.kpi_target_allocation_id
+  WHERE kta.set_by_people_id = $1
+)
+      SELECT
+        rr.kpi_result_id AS hist_id,
+        rr.kpi_values_id,
+        rr.kpi_target_allocation_id,
+        rr.week,
+        rr.period_label,
+        rr.result_date,
+        rr.kpi_id,
+        rr.value,
+        rr.updated_at,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS subject,
+        COALESCE(subject_link.subject_name, k.kpi_sub_title, '') AS indicator_sub_title,
+        COALESCE(rr.result_unit, kta.target_unit, k.unit) AS unit,
+        COALESCE(rr.result_target_value, kta.target_value, k.target_value) AS target,
+        k.min_value AS min,
+        k.max_value AS max,
+        k.tolerance_type,
+        k.up_tolerance,
+        k.low_tolerance,
+        k.frequency,
+        k.calculation_mode,
+        k.kpi_explanation AS definition,
+        k.calculation_on,
+        k.target_auto_adjustment,
+        COALESCE(rr.result_high_limit, k.high_limit) AS high_limit,
+        COALESCE(rr.result_low_limit, k.low_limit) AS low_limit,
+        k.target_direction
+      FROM ranked_results rr
+      JOIN public.kpi k
+        ON k.kpi_id = rr.kpi_id
+      LEFT JOIN public.kpi_target_allocation kta
+        ON kta.kpi_target_allocation_id = rr.kpi_target_allocation_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = rr.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE rr.rn = 1
+      ORDER BY
+        rr.month_bucket DESC,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') ASC,
+        rr.kpi_result_id DESC
+      `,
+      [responsiblePeopleId]
+    );
+
+    const monthMap = new Map();
+    kpiRes.rows.forEach((kpi) => {
+      const sourceDate = kpi.result_date || kpi.updated_at;
+      if (!sourceDate) return;
+      const date = new Date(sourceDate);
+      if (Number.isNaN(date.getTime())) return;
+      const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+      if (!monthMap.has(monthKey)) monthMap.set(monthKey, []);
+      monthMap.get(monthKey).push(kpi);
+    });
+
+    const sortedMonthEntries = Array.from(monthMap.entries()).sort((a, b) => {
+      const [yearA, monthA] = a[0].split("-").map(Number);
+      const [yearB, monthB] = b[0].split("-").map(Number);
+      return new Date(yearB, monthB) - new Date(yearA, monthA);
+    });
+
+    const formatDashboardTimestamp = (value) => {
+      if (!value) return "No updates recorded";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return "No updates recorded";
+      return parsed.toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    };
+
+    const monthSummaries = sortedMonthEntries.map(([monthKey, items], index) => {
+      const [year, month] = monthKey.split("-").map(Number);
+      const monthDate = new Date(year, month);
+      let alertCount = 0;
+      let onTrackCount = 0;
+      let missingCount = 0;
+      let latestUpdatedAt = null;
+
+      items.forEach((kpi) => {
+        const currentValue = normalizeMetricNumberByUnit(kpi.value, kpi.unit);
+        const statusInfo = getDashboardSubmissionStatus(kpi);
+
+        if (currentValue === null) missingCount += 1;
+        else if (statusInfo.isGood === false) alertCount += 1;
+        else onTrackCount += 1;
+
+        if (kpi.updated_at) {
+          const updatedAt = new Date(kpi.updated_at);
+          if (!Number.isNaN(updatedAt.getTime()) && (!latestUpdatedAt || updatedAt > latestUpdatedAt)) {
+            latestUpdatedAt = updatedAt;
+          }
+        }
+      });
+
+      return {
+        monthKey,
+        monthLabel: monthDate.toLocaleString("en-US", { month: "long", year: "numeric" }),
+        monthShort: monthDate.toLocaleString("en-US", { month: "short" }).toUpperCase(),
+        isLatest: index === 0,
+        kpiCount: items.length,
+        alertCount,
+        onTrackCount,
+        missingCount,
+        lastUpdated: formatDashboardTimestamp(latestUpdatedAt),
+        kpis: items
+      };
+    });
+
+    const latestSubmittedRow = kpiRes.rows
+      .slice()
+      .sort((left, right) => {
+        const leftTime = new Date(left?.updated_at || left?.result_date || 0).getTime();
+        const rightTime = new Date(right?.updated_at || right?.result_date || 0).getTime();
+        return rightTime - leftTime;
+      })
+      .find((row) => normalizeOptionalTextInput(row?.week || row?.period_label));
+    const dashboardFormWeek =
+      normalizeOptionalTextInput(latestSubmittedRow?.week || latestSubmittedRow?.period_label) ||
+      getCurrentFormWeek();
+    const kpiFormUrl = requestedFormReturnUrl || buildKpiFormUrl({
+      responsibleId,
+      week: dashboardFormWeek,
+      calculationMode: latestSubmittedRow?.calculation_mode,
+      frequency: latestSubmittedRow?.frequency
+    });
+
+    res.json({
+      responsible,
+      months: monthSummaries,
+      kpi_form_url: kpiFormUrl
+    });
+  } catch (err) {
+    console.error("GET /api/responsibles/:responsibleId/dashboard error:", err.message);
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : "Failed to load dashboard data." });
+  }
+});
+
+// JSON equivalent of the original GET /dashboard-history HTML page (Etape 2).
+// The original queried public.kpi_values_hist26 JOIN public."Kpi" -- confirmed
+// via information_schema that neither table exists in the current database, so
+// that page has been permanently broken (throws on every request) since before
+// this migration; there is no old_value/new_value pairing left to recover. This
+// returns the closest modern equivalent instead: every kpi_result row ever
+// recorded for this responsible (same kta.set_by_people_id scope used
+// elsewhere), ordered newest first, so the frontend can show a real
+// value-over-time history even though the exact old/new-value shape can't be
+// reproduced from data that no longer exists.
+router.get("/api/responsibles/:responsibleId/kpi-value-history", async (req, res) => {
+  try {
+    const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
+    if (!responsibleId) {
+      return res.status(400).json({ error: "Missing responsible_id" });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        kr.kpi_result_id AS hist_id,
+        kr.kpi_id,
+        kr.kpi_target_allocation_id,
+        COALESCE(kr.week, kr.period_label) AS week,
+        kr.raw_value AS value,
+        COALESCE(kr.unit, kta.target_unit, k.unit) AS unit,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS subject,
+        COALESCE(subject_link.subject_name, k.kpi_sub_title, '') AS indicator_sub_title,
+        kr.recorded_at AS updated_at
+      FROM public.kpi_result kr
+      JOIN public.kpi_target_allocation kta
+        ON kta.kpi_target_allocation_id = kr.kpi_target_allocation_id
+      JOIN public.kpi k
+        ON k.kpi_id = kr.kpi_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = kr.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE kta.set_by_people_id = $1
+      ORDER BY kr.recorded_at DESC NULLS LAST, kr.kpi_result_id DESC
+      `,
+      [responsibleId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET /api/responsibles/:responsibleId/kpi-value-history error:", err.message);
+    res.status(500).json({ error: "Failed to load KPI value history." });
   }
 });
 
