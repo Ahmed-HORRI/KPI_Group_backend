@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { pool } = require("../config/db");
+const { pool, actionPlanPool } = require("../config/db");
 const { normalizeOptionalIntegerInput } = require("../utils/normalize");
 const {
   normalizeText,
@@ -24,8 +24,6 @@ const {
   hasPublicTable,
   canUseActionPlanCorrectiveActions,
   updateActionPlanCorrectiveActionStatus,
-  ensureLegacyCorrectiveActionsSchema,
-  upsertCorrectiveAction,
   loadActionPlanCorrectiveActionMaps,
   syncActionPlanCorrectiveActionsForPeriod,
 } = require("../services/actionPlan.service");
@@ -478,21 +476,30 @@ router.post("/api/corrective-actions/submit", async (req, res) => {
   }
 });
 
-// Ported from the monolith's app.post("/submit-bulk-corrective-actions", ...)
-// (index.js), preserving the exact UPDATE ... status = CASE SQL and the
-// "completed" counting condition. The original parsed HTML form fields
-// named `root_cause_<id>`, `solution_<id>`, etc.; this JSON version
-// receives them directly in the `actions[]` array instead.
+// NOTE: originally ported verbatim from the monolith's
+// UPDATE public.corrective_actions ... status = CASE ... SQL, matching the
+// mechanical-port rule. Same dead end as POST /api/corrective-actions/submit
+// (see that route's comment and MIGRATION_MAP.md): public.corrective_actions
+// does not exist in the current database, so the ported logic could never
+// persist anything. Rewritten to write through
+// syncActionPlanCorrectiveActionsForPeriod per KPI allocation, like the
+// single-action /submit route above -- each corrective_action_id here is
+// looked up in the Action Plan DB directly to find which
+// kpi_target_allocation_id/period it belongs to, edits are grouped by
+// allocation (a bulk page can touch several KPIs' open actions at once),
+// and each group is merged with its existing siblings before syncing so
+// untouched actions for the same KPI/period aren't deleted.
 router.post("/api/corrective-actions/submit-bulk", async (req, res) => {
   try {
-    await ensureLegacyCorrectiveActionsSchema();
-
     const { week, actions } = req.body || {};
     const submittedActions = Array.isArray(actions) ? actions : [];
     let completedCount = 0;
 
+    const editsById = new Map();
     for (const action of submittedActions) {
-      const caId = action?.corrective_action_id;
+      const caId = normalizeOptionalIntegerInput(action?.corrective_action_id);
+      if (!caId) continue;
+
       const rootCause = normalizeText(action?.root_cause);
       const solution = normalizeText(action?.implemented_solution);
       const dueDate = action?.due_date || null;
@@ -502,49 +509,101 @@ router.post("/api/corrective-actions/submit-bulk", async (req, res) => {
       const responsibleName = normalizeText(action?.responsible);
       const importance = normalizeCorrectiveActionImportance(action?.importance);
       const urgency = normalizeCorrectiveActionUrgency(action?.urgency);
+
       if (
-        rootCause ||
-        solution ||
-        dueDate ||
-        responsibleName ||
-        estimatedDurationDays !== null ||
-        importance ||
-        urgency
+        rootCause || solution || dueDate || responsibleName ||
+        estimatedDurationDays !== null || importance || urgency
       ) {
-        await pool.query(
-          `UPDATE public.corrective_actions
-           SET root_cause=$1,
-               implemented_solution=$2,
-               due_date=$3::date,
-               estimated_duration_days=$4::integer,
-               responsible=$5::text,
-               importance=$6::text,
-               urgency=$7::text,
-               status = CASE
-                 WHEN $1::text IS NOT NULL
-                  AND $2::text IS NOT NULL
-                  AND $3::date IS NOT NULL
-                  AND NULLIF(BTRIM($5::text), '') IS NOT NULL
-                 THEN 'Waiting for validation'
-                 ELSE status
-               END,
-               updated_date=NOW()
-           WHERE corrective_action_id=$8`,
-          [
-            rootCause,
-            solution,
-            dueDate,
-            estimatedDurationDays,
-            responsibleName,
-            importance,
-            urgency,
-            caId
-          ]
-        );
+        editsById.set(caId, {
+          root_cause: rootCause,
+          implemented_solution: solution,
+          due_date: dueDate,
+          estimated_duration_days: estimatedDurationDays,
+          responsible: responsibleName,
+          importance,
+          urgency,
+          status: rootCause && solution && dueDate && responsibleName ? "Waiting for validation" : undefined
+        });
         if (rootCause && solution && dueDate && responsibleName) {
           completedCount++;
         }
       }
+    }
+
+    if (editsById.size === 0) {
+      return res.json({ completed_count: 0, week: week || null });
+    }
+
+    const targetIds = Array.from(editsById.keys());
+    const targetRowsRes = await actionPlanPool.query(
+      `SELECT id, kpi_id, unit_id, kpi_target_allocation_id, period_label
+       FROM public.action
+       WHERE id = ANY($1::bigint[])`,
+      [targetIds]
+    );
+
+    const groupsByAllocation = new Map();
+    targetRowsRes.rows.forEach((row) => {
+      const allocationId = normalizeOptionalIntegerInput(row.kpi_target_allocation_id);
+      if (!allocationId) return;
+      if (!groupsByAllocation.has(allocationId)) {
+        groupsByAllocation.set(allocationId, {
+          kpiId: row.kpi_id,
+          unitId: row.unit_id,
+          periodLabel: row.period_label,
+          actionIds: []
+        });
+      }
+      groupsByAllocation.get(allocationId).actionIds.push(normalizeOptionalIntegerInput(row.id));
+    });
+
+    const responsibleId = normalizeOptionalIntegerInput(req.body?.responsible_id);
+    const responsibleContext = responsibleId ? await loadFormResponsibleContext(responsibleId) : null;
+
+    for (const [allocationId, group] of groupsByAllocation.entries()) {
+      const kpiInfoRes = await pool.query(
+        `
+        SELECT
+          COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS kpi_name,
+          COALESCE(subject_link.subject_name, k.kpi_sub_title, '') AS subject
+        FROM public.kpi_target_allocation kta
+        JOIN public.kpi k ON k.kpi_id = kta.kpi_id
+        LEFT JOIN LATERAL (
+          SELECT s.subject_name
+          FROM public.subject_kpi sk
+          JOIN public.subject s ON s.subject_id = sk.subject_id
+          WHERE sk.kpi_id = kta.kpi_id
+          ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+          LIMIT 1
+        ) subject_link ON TRUE
+        WHERE kta.kpi_target_allocation_id = $1
+        LIMIT 1
+        `,
+        [allocationId]
+      );
+      const kpiInfo = kpiInfoRes.rows[0] || {};
+
+      const { currentByAllocationId } = await loadActionPlanCorrectiveActionMaps(
+        [{ kpi_target_allocation_id: allocationId }],
+        group.periodLabel
+      );
+      const existingActions = currentByAllocationId[String(allocationId)] || [];
+
+      const mergedActions = existingActions.map((existingAction) => {
+        const edit = editsById.get(normalizeOptionalIntegerInput(existingAction.corrective_action_id));
+        return edit ? { ...existingAction, ...edit } : existingAction;
+      });
+
+      await syncActionPlanCorrectiveActionsForPeriod({
+        kpiTargetAllocationId: allocationId,
+        kpiId: group.kpiId,
+        unitId: group.unitId,
+        periodLabel: group.periodLabel,
+        subject: kpiInfo.subject,
+        kpiName: kpiInfo.kpi_name,
+        actions: mergedActions,
+        responsibleContext
+      });
     }
 
     res.json({ completed_count: completedCount, week: week || null });
