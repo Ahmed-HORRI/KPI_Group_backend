@@ -267,4 +267,15 @@ function buildKpiChartHistorySeries({
   };
 }
 
-module.exports = { normalizeKpiFrequency, buildKpiChartHistorySeries, KPI_CHART_HISTORY_WINDOW };
+module.exports = {
+  normalizeKpiFrequency,
+  buildKpiChartHistorySeries,
+  KPI_CHART_HISTORY_WINDOW,
+  // Also exported (additive, nothing else changed) for
+  // GET /api/responsibles/:id/kpi-form, which needs the monolith's local
+  // `weekToMonthLabel` / `sortHistoryEntries` period helpers -- the original
+  // /form handler called exactly these three functions directly.
+  parseKpiChartPeriodKey,
+  formatKpiChartPeriodLabel,
+  getKpiChartPeriodDate,
+};

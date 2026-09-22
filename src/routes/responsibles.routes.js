@@ -20,7 +20,6 @@ const {
   resolveResponsibleOwnerContext,
   loadFormResponsibleContext,
 } = require("../models/responsible.model");
-const { formatIsoDateValue } = require("../utils/weekPeriod");
 const {
   buildKpiFormUrl,
   sanitizeKpiFormReturnUrl,
@@ -34,12 +33,32 @@ const {
   normalizeCorrectiveActionUrgency,
   isPercentageUnit,
   normalizeMetricNumberByUnit,
+  inferKpiDirection,
+  needsCorrectiveAction,
+  sortCorrectiveActions,
 } = require("../services/kpiShared.service");
 const { getCurrentFormWeek } = require("../services/ceoReportGeneration.service");
 const {
   canUseActionPlanCorrectiveActions,
   syncActionPlanCorrectiveActionsForPeriod,
+  getResponsibleWithKPIs,
 } = require("../services/actionPlan.service");
+const {
+  DEFAULT_KPI_SUBMISSION_TIMEZONE,
+  formatIsoDateValue,
+  getCanonicalKpiSubmissionFrequency,
+  getKpiSubmissionTargetPeriodLabel,
+  buildTimeZoneDateContext,
+  parseWeekLabelDate,
+} = require("../utils/weekPeriod");
+const {
+  normalizeKpiFrequency,
+  buildKpiChartHistorySeries,
+  KPI_CHART_HISTORY_WINDOW,
+  parseKpiChartPeriodKey,
+  formatKpiChartPeriodLabel,
+  getKpiChartPeriodDate,
+} = require("../services/kpiChart.service");
 const {
   evaluateAndCreateKpiTargetAdjustmentProposal,
   sendKpiTargetAdjustmentApprovalEmail,
@@ -2121,6 +2140,451 @@ router.get("/api/responsibles/:responsibleId/kpi-value-history", async (req, res
   } catch (err) {
     console.error("GET /api/responsibles/:responsibleId/kpi-value-history error:", err.message);
     res.status(500).json({ error: "Failed to load KPI value history." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/responsibles/:responsibleId/kpi-form
+//
+// JSON equivalent of the original GET /form HTML page (index.js:31820-38601,
+// 6782 lines -- the KPI value entry form). Nothing in Etape 1 returned this
+// combined payload: the original page smuggled all of it into the markup via
+// `data-*` attributes on each `.kpi-card`, so the React page needs it as data.
+//
+// It mirrors the original's 6 SQL statements and its server-side derivation:
+//   1. active people list           -> corrective-action "Responsible" options
+//   2. getResponsibleWithKPIs(...)  -> responsible context + the main
+//      kpi_target_allocation/kpi query scoped by kta.set_by_people_id +
+//      the Action Plan corrective-action maps (2nd database), all already
+//      extracted into actionPlan.service.js during Etape 1
+//   3. value history  (kpi_result, raw_value IS NOT NULL)
+//   4. comment history (kpi_result, DISTINCT ON period, comments non-empty)
+// plus per-KPI status/direction/chart-series derivation
+// (inferKpiDirection / needsCorrectiveAction / buildKpiChartHistorySeries)
+// and the week/month period-selector list.
+//
+// Deliberate omissions (all confirmed dead in the original, see the structural
+// analysis of that route):
+//   - the second, redundant loadFormResponsibleContext() call (identical data
+//     to the one getResponsibleWithKPIs already performs; its results were
+//     only used as fallbacks that can never be reached because the first call
+//     already substitutes "Allocated scope"/"" defaults);
+//   - the per-KPI console.log debug blocks (8 lines x every KPI, every request);
+//   - the computed-but-never-rendered caStatus/safeCaStatusClass/
+//     latestCorrectiveAction locals and findPreviousMonthLabel.
+// Two corrections vs. the original, noted so the difference is explicit:
+//   - corrective-action history is keyed by allocation id only. The original
+//     looked up `correctiveActionsByKpiMonth[kpi.kpi_id]` FIRST and only then
+//     `[kpi.kpi_values_id]`, although that map is keyed by allocation id --
+//     so a KPI whose kpi_id happened to equal another KPI's allocation id got
+//     the wrong history.
+//   - the currently selected period is always present in period.options (the
+//     original could emit a <select> with no matching <option>, which makes a
+//     browser silently display the first option instead of the real period).
+// ---------------------------------------------------------------------------
+const getKpiFormDisplayUnit = (kpi = {}) => {
+  const unit = String(kpi.unit || "").trim();
+  if (unit.toLowerCase() !== "kcur") return unit;
+
+  const currency = String(kpi.selling_currency || kpi.local_currency || "")
+    .trim()
+    .toUpperCase();
+
+  return currency ? `k${currency}` : "kCur";
+};
+
+const parseKpiFormNumber = (value) => {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text || text === "None" || text === "null") return null;
+  const parsed = parseFloat(text);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const weekToKpiFormMonthLabel = (periodLabel) => {
+  const monthKey = parseKpiChartPeriodKey(periodLabel, "monthly");
+  if (!monthKey) return periodLabel || "";
+  return formatKpiChartPeriodLabel(monthKey, "monthly");
+};
+
+const sortKpiFormHistoryEntries = (entries, getUpdatedAt, frequencyMode = "monthly") =>
+  (Array.isArray(entries) ? entries.slice() : []).sort((a, b) => {
+    const leftPeriodKey = parseKpiChartPeriodKey(
+      a?.week || a?.period_label || a?.month_label || a?.result_date,
+      frequencyMode
+    );
+    const rightPeriodKey = parseKpiChartPeriodKey(
+      b?.week || b?.period_label || b?.month_label || b?.result_date,
+      frequencyMode
+    );
+    const periodDiff =
+      (getKpiChartPeriodDate(rightPeriodKey, frequencyMode)?.getTime() ?? 0) -
+      (getKpiChartPeriodDate(leftPeriodKey, frequencyMode)?.getTime() ?? 0);
+    if (periodDiff !== 0) return periodDiff;
+
+    return new Date(getUpdatedAt(b) || 0) - new Date(getUpdatedAt(a) || 0);
+  });
+
+// Same ISO-week label helper the original declared inline at index.js:31971.
+const getKpiFormIsoWeekLabel = (inputDate) => {
+  const date = new Date(Date.UTC(
+    inputDate.getFullYear(),
+    inputDate.getMonth(),
+    inputDate.getDate()
+  ));
+
+  const dayNumber = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNumber);
+
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNumber = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+
+  return `${date.getUTCFullYear()}-Week${String(weekNumber).padStart(2, "0")}`;
+};
+
+// Port of buildAvailableFormPeriods (index.js:32435): monthly -> current month
+// + the previous 6; anything else -> the current FORM week + the previous 4
+// (the original's comment says 6 but its loop stops at -4).
+const buildAvailableKpiFormPeriods = ({ frequency }) => {
+  const normalizedFrequency = String(frequency || "").trim().toLowerCase();
+  const periods = [];
+
+  if (normalizedFrequency === "monthly") {
+    const currentDate = new Date();
+    for (let offset = 0; offset >= -6; offset -= 1) {
+      const date = new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      periods.push(formatKpiChartPeriodLabel(monthKey, "monthly"));
+    }
+    return periods;
+  }
+
+  const currentWeekDate = parseWeekLabelDate(getCurrentFormWeek());
+  const referenceDate =
+    currentWeekDate && !Number.isNaN(currentWeekDate.getTime())
+      ? currentWeekDate
+      : new Date();
+
+  for (let offset = 0; offset >= -4; offset -= 1) {
+    const date = new Date(referenceDate);
+    date.setDate(referenceDate.getDate() + offset * 7);
+    periods.push(getKpiFormIsoWeekLabel(date));
+  }
+
+  return periods;
+};
+
+const mapKpiFormCorrectiveAction = (action = {}, allocationId = null) => {
+  const periodLabel = action.week || action.period_label || "";
+
+  return {
+    corrective_action_id: action.corrective_action_id ?? action.id ?? null,
+    allocation_id: allocationId,
+    week: periodLabel,
+    month_label: weekToKpiFormMonthLabel(periodLabel),
+    status: action.status || "",
+    root_cause: action.root_cause || "",
+    implemented_solution: action.implemented_solution || "",
+    evidence: action.evidence || "",
+    due_date: action.due_date || "",
+    estimated_duration_days: normalizeCorrectiveActionEstimatedDurationDays(
+      action.estimated_duration_days
+    ),
+    importance: normalizeCorrectiveActionImportance(action.importance) || "",
+    urgency: normalizeCorrectiveActionUrgency(action.urgency) || "",
+    responsible: action.responsible || "",
+    updated_at: action.updated_date || action.created_date || null
+  };
+};
+
+router.get("/api/responsibles/:responsibleId/kpi-form", async (req, res) => {
+  try {
+    const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
+    if (!responsibleId) {
+      return res.status(400).json({ error: "Missing responsible_id" });
+    }
+
+    const requestedCalculationMode = normalizeOptionalTextInput(req.query?.calculation_mode);
+    const requestedUnitId = normalizeOptionalIntegerInput(req.query?.unit_id);
+    const normalizedFrequencyFilter = normalizeOptionalTextInput(req.query?.frequency)
+      ? getCanonicalKpiSubmissionFrequency(req.query.frequency)
+      : null;
+    const week =
+      normalizeOptionalTextInput(req.query?.week) ||
+      (normalizedFrequencyFilter
+        ? getKpiSubmissionTargetPeriodLabel({
+          timeContext: buildTimeZoneDateContext(DEFAULT_KPI_SUBMISSION_TIMEZONE),
+          frequencyLabel: normalizedFrequencyFilter
+        })
+        : getCurrentFormWeek());
+
+    // Query 1 -- active people, the corrective-action owner options.
+    const peopleRes = await pool.query(
+      `SELECT people_id,
+          TRIM(first_name || ' ' || name) AS display_name
+   FROM public.people
+   WHERE status = 'Active'
+   ORDER BY first_name ASC, name ASC`
+    );
+    const responsibleOptions = peopleRes.rows
+      .map((row) => normalizeOptionalTextInput(row.display_name))
+      .filter(Boolean);
+
+    // Queries 2/3/4 -- responsible context, the main KPI+allocation query and
+    // the Action Plan corrective-action maps.
+    const {
+      responsible,
+      kpis,
+      correctiveActionsEnabled,
+      correctiveActionHistoryByAllocation
+    } = await getResponsibleWithKPIs(responsibleId, week, {
+      frequency: normalizedFrequencyFilter,
+      calculationMode: requestedCalculationMode,
+      unitId: requestedUnitId
+    });
+
+    const responsibleName = normalizeOptionalTextInput(responsible?.name) || "";
+    const responsibleGroupLabel =
+      normalizeOptionalTextInput(responsible?.group_name) ||
+      normalizeOptionalTextInput(responsible?.plant_name) ||
+      "Allocated scope";
+    const responsibleRoleLabel =
+      normalizeOptionalTextInput(kpis?.[0]?.allocation_role_name) ||
+      normalizeOptionalTextInput(responsible?.role_name) ||
+      normalizeOptionalTextInput(responsible?.role) ||
+      "Not assigned";
+    const formFrequencyLabel =
+      normalizedFrequencyFilter ||
+      normalizeOptionalTextInput(kpis?.[0]?.frequency) ||
+      "Weekly";
+    const formReturnUrl = sanitizeKpiFormReturnUrl(
+      req.query?.return_url,
+      buildKpiFormUrl({
+        responsibleId,
+        week,
+        calculationMode: requestedCalculationMode,
+        frequency: formFrequencyLabel,
+        unitId: requestedUnitId
+      })
+    );
+
+    const isMonthlyForm = String(formFrequencyLabel).trim().toLowerCase() === "monthly";
+    const formPeriodLabel = isMonthlyForm ? weekToKpiFormMonthLabel(week) : week;
+    const periodOptions = buildAvailableKpiFormPeriods({ frequency: formFrequencyLabel });
+    if (formPeriodLabel && !periodOptions.includes(formPeriodLabel)) {
+      periodOptions.unshift(formPeriodLabel);
+    }
+    const defaultResponsible =
+      responsibleOptions.find(
+        (option) => option.toLowerCase() === responsibleName.toLowerCase()
+      ) ||
+      responsibleOptions[0] ||
+      "";
+
+    const basePayload = {
+      responsible: {
+        people_id: responsible?.people_id ?? responsibleId,
+        name: responsibleName,
+        group: responsibleGroupLabel,
+        role: responsibleRoleLabel,
+        email: responsible?.email || "",
+        department: responsible?.department_name || ""
+      },
+      period: {
+        week,
+        label: formPeriodLabel,
+        title: isMonthlyForm ? "Month" : "Week",
+        options: periodOptions
+      },
+      frequency: formFrequencyLabel,
+      frequency_mode: normalizeKpiFrequency(formFrequencyLabel),
+      calculation_mode: requestedCalculationMode,
+      unit_id: requestedUnitId,
+      return_url: formReturnUrl,
+      corrective_actions_enabled: Boolean(correctiveActionsEnabled),
+      responsible_options: responsibleOptions,
+      default_responsible: defaultResponsible,
+      has_initial_invalid_kpi: false,
+      kpis: []
+    };
+
+    // The original rendered a standalone "No KPI values to enter yet" page here.
+    if (!kpis.length) {
+      return res.json(basePayload);
+    }
+
+    const allocationIds = kpis
+      .map((kpi) => normalizeOptionalIntegerInput(kpi.kpi_values_id))
+      .filter((value) => Number.isInteger(value));
+
+    // Query 5 -- value history per allocation.
+    const histRes = await pool.query(
+      `
+      SELECT
+        kr.kpi_target_allocation_id AS kpi_values_id,
+        kr.kpi_id,
+        TO_CHAR(kr.result_date, 'YYYY-MM-DD') AS result_date,
+        kr.week,
+        kr.period_label,
+        kr.raw_value AS new_value,
+        kr.recorded_at AS updated_at
+      FROM public.kpi_result kr
+      WHERE kr.kpi_target_allocation_id = ANY($1::int[])
+        AND kr.raw_value IS NOT NULL
+      ORDER BY
+        kr.kpi_target_allocation_id,
+        kr.result_date ASC NULLS LAST,
+        kr.week ASC,
+        kr.period_label ASC,
+        kr.recorded_at ASC
+      `,
+      [allocationIds]
+    );
+
+    const historyByKpi = {};
+    histRes.rows.forEach((row) => {
+      const historyKey = String(row.kpi_values_id || row.kpi_id);
+      if (!historyByKpi[historyKey]) historyByKpi[historyKey] = [];
+      historyByKpi[historyKey].push({
+        week: row.week,
+        period_label: row.period_label,
+        result_date: row.result_date,
+        value: parseFloat(row.new_value)
+      });
+    });
+
+    // Query 6 -- latest comment per allocation per period.
+    const commentsHistoryRes = await pool.query(
+      `
+      SELECT DISTINCT ON (kr.kpi_target_allocation_id, COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')))
+        kr.kpi_target_allocation_id AS kpi_values_id,
+        kr.kpi_id,
+        COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')) AS week,
+        kr.comments AS comment,
+        kr.recorded_at AS updated_at
+      FROM public.kpi_result kr
+      WHERE kr.kpi_target_allocation_id = ANY($1::int[])
+        AND kr.comments IS NOT NULL
+        AND BTRIM(kr.comments) <> ''
+      ORDER BY
+        kr.kpi_target_allocation_id,
+        COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')),
+        kr.recorded_at DESC,
+        kr.kpi_result_id DESC
+      `,
+      [allocationIds]
+    );
+
+    const commentsByAllocation = {};
+    commentsHistoryRes.rows.forEach((row) => {
+      const commentKey = String(row.kpi_values_id || row.kpi_id);
+      if (!commentsByAllocation[commentKey]) commentsByAllocation[commentKey] = [];
+      commentsByAllocation[commentKey].push({
+        week: row.week,
+        month_label: weekToKpiFormMonthLabel(row.week),
+        text: row.comment,
+        updated_at: row.updated_at
+      });
+    });
+
+    let hasInitialInvalidKpi = false;
+
+    const formKpis = kpis.map((kpi) => {
+      const allocationId = normalizeOptionalIntegerInput(kpi.kpi_values_id);
+      const allocationKey = String(kpi.kpi_values_id ?? "");
+      const displayUnit = getKpiFormDisplayUnit({ ...kpi, unit: kpi.display_unit });
+      const lowLimit = parseKpiFormNumber(kpi.low_limit);
+      const highLimit = parseKpiFormNumber(kpi.high_limit);
+      const targetValue = parseKpiFormNumber(kpi.target);
+      const currentValue = parseKpiFormNumber(kpi.value);
+      const goodDirection = inferKpiDirection(kpi);
+      const initialNeedsCA =
+        currentValue !== null &&
+        needsCorrectiveAction(currentValue, lowLimit, highLimit, goodDirection);
+      const currentPeriodActions = Array.isArray(kpi.current_week_corrective_actions)
+        ? kpi.current_week_corrective_actions
+        : [];
+      const hasValidCA = currentPeriodActions.some(
+        (action) =>
+          String(action.root_cause || "").trim() &&
+          String(action.implemented_solution || "").trim() &&
+          String(action.due_date || "").trim() &&
+          String(action.responsible || "").trim()
+      );
+
+      if (correctiveActionsEnabled && initialNeedsCA && !hasValidCA) {
+        hasInitialInvalidKpi = true;
+      }
+
+      const frequencyMode = normalizeKpiFrequency(
+        formFrequencyLabel || kpi.frequency
+      );
+      const chartSeries = buildKpiChartHistorySeries({
+        historyItems: historyByKpi[allocationKey] || [],
+        frequencyMode,
+        currentPeriodLabel: week,
+        currentValue,
+        windowSize: KPI_CHART_HISTORY_WINDOW
+      });
+
+      const historyActions = correctiveActionsEnabled
+        ? sortKpiFormHistoryEntries(
+          (correctiveActionHistoryByAllocation?.[allocationKey] || []).map((action) =>
+            mapKpiFormCorrectiveAction(action, allocationId)
+          ),
+          (entry) => entry?.updated_at,
+          frequencyMode
+        )
+        : [];
+      const historyComments = sortKpiFormHistoryEntries(
+        commentsByAllocation[allocationKey] || [],
+        (entry) => entry?.updated_at,
+        frequencyMode
+      );
+
+      return {
+        allocation_id: allocationId,
+        kpi_id: kpi.kpi_id,
+        title: normalizeOptionalTextInput(kpi.indicator_sub_title) || "KPI",
+        subject: normalizeOptionalTextInput(kpi.subject) || "",
+        definition: normalizeOptionalTextInput(kpi.definition) || "",
+        unit: displayUnit,
+        frequency: normalizeOptionalTextInput(kpi.frequency) || formFrequencyLabel,
+        value: currentValue,
+        comment: kpi.latest_comment || "",
+        target: targetValue,
+        low_limit: lowLimit,
+        high_limit: highLimit,
+        good_direction: goodDirection,
+        needs_corrective_action: initialNeedsCA,
+        has_valid_corrective_action: hasValidCA,
+        corrective_action_count: kpi.corrective_action_count || 0,
+        last_updated: kpi.last_updated || null,
+        chart: {
+          labels: chartSeries.labels,
+          values: chartSeries.values,
+          current_period_label: chartSeries.currentPeriodLabel || week
+        },
+        current_actions: correctiveActionsEnabled
+          ? sortCorrectiveActions(currentPeriodActions).map((action) =>
+            mapKpiFormCorrectiveAction(action, allocationId)
+          )
+          : [],
+        history_actions: historyActions,
+        history_comments: historyComments
+      };
+    });
+
+    res.json({
+      ...basePayload,
+      has_initial_invalid_kpi: hasInitialInvalidKpi,
+      kpis: formKpis
+    });
+  } catch (err) {
+    console.error("GET /api/responsibles/:responsibleId/kpi-form error:", err.message);
+    res.status(err.statusCode || 500).json({
+      error: err.statusCode ? err.message : "Failed to load the KPI entry form."
+    });
   }
 });
 
