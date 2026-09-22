@@ -27,7 +27,9 @@ const {
   ensureLegacyCorrectiveActionsSchema,
   upsertCorrectiveAction,
   loadActionPlanCorrectiveActionMaps,
+  syncActionPlanCorrectiveActionsForPeriod,
 } = require("../services/actionPlan.service");
+const { loadFormResponsibleContext } = require("../models/responsible.model");
 
 router.get("/generate-ca-suggestion", async (req, res) => {
   try {
@@ -361,6 +363,18 @@ router.post("/api/corrective-actions/:correctiveActionId/status", async (req, re
 // Ported from the monolith's app.post("/submit-corrective-action", ...)
 // (index.js). The original read its fields off a raw HTML form post;
 // this JSON version receives them directly in the request body.
+// NOTE: originally ported verbatim from the monolith's upsertCorrectiveAction
+// (public.corrective_actions UPDATE/INSERT), matching the mechanical-port
+// rule. That table does not exist in the current database (confirmed via
+// information_schema, same as public."Responsible"/"Plant"/"Department" --
+// see MIGRATION_MAP.md), so the original logic could never actually persist
+// anything here. Rewritten to write through
+// syncActionPlanCorrectiveActionsForPeriod instead, the same Action Plan DB
+// writer already used by POST /api/responsibles/:id/kpi-results -- this is
+// the only currently-live corrective-action store. That function replaces
+// the *entire* set of actions for a kpi_target_allocation_id+period_label,
+// so existing sibling actions for the same KPI/week are loaded first and
+// carried through unchanged; only the submitted one is added/updated.
 router.post("/api/corrective-actions/submit", async (req, res) => {
   try {
     const {
@@ -381,20 +395,79 @@ router.post("/api/corrective-actions/submit", async (req, res) => {
       return res.status(400).json({ error: "Missing responsible_id, kpi_id, or week" });
     }
 
-    const saved = await upsertCorrectiveAction(responsible_id, kpi_id, week, {
-      correctiveActionId: normalizeText(corrective_action_id),
-      rootCause: normalizeText(root_cause),
-      implementedSolution: normalizeText(implemented_solution),
-      dueDate: due_date || null,
-      estimatedDurationDays: estimated_duration_days,
-      responsibleName: normalizeText(responsible),
+    const allocationRes = await pool.query(
+      `
+      SELECT
+        kta.kpi_target_allocation_id,
+        kta.unit_id,
+        kta.plant_id,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS kpi_name,
+        COALESCE(subject_link.subject_name, k.kpi_sub_title, '') AS subject
+      FROM public.kpi_target_allocation kta
+      JOIN public.kpi k ON k.kpi_id = kta.kpi_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = kta.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE kta.set_by_people_id = $1 AND kta.kpi_id = $2
+      LIMIT 1
+      `,
+      [responsible_id, kpi_id]
+    );
+    const allocation = allocationRes.rows[0];
+    if (!allocation) {
+      return res.status(404).json({ error: "KPI allocation not found for this responsible." });
+    }
+
+    const responsibleContext = await loadFormResponsibleContext(responsible_id);
+
+    const { currentByAllocationId } = await loadActionPlanCorrectiveActionMaps(
+      [{ kpi_target_allocation_id: allocation.kpi_target_allocation_id }],
+      week
+    );
+    const existingActions = currentByAllocationId[String(allocation.kpi_target_allocation_id)] || [];
+
+    const submittedAction = {
+      corrective_action_id: normalizeText(corrective_action_id),
+      root_cause: normalizeText(root_cause),
+      implemented_solution: normalizeText(implemented_solution),
+      due_date: due_date || null,
+      estimated_duration_days,
+      responsible: normalizeText(responsible),
       importance,
       urgency,
-      status: normalizeCorrectiveActionStatus(req.body?.status),
-      demandeur: normalizeText(req.body?.demandeur)
+      status: normalizeCorrectiveActionStatus(req.body?.status) || undefined
+    };
+
+    const normalizedTargetId = normalizeText(corrective_action_id);
+    let matched = false;
+    const mergedActions = existingActions.map((action) => {
+      if (normalizedTargetId && String(action.corrective_action_id) === String(normalizedTargetId)) {
+        matched = true;
+        return { ...action, ...submittedAction };
+      }
+      return action;
+    });
+    if (!matched) {
+      mergedActions.push(submittedAction);
+    }
+
+    const result = await syncActionPlanCorrectiveActionsForPeriod({
+      kpiTargetAllocationId: allocation.kpi_target_allocation_id,
+      kpiId: kpi_id,
+      unitId: allocation.unit_id ?? allocation.plant_id,
+      periodLabel: week,
+      subject: allocation.subject,
+      kpiName: allocation.kpi_name,
+      actions: mergedActions,
+      responsibleContext
     });
 
-    if (!saved) {
+    if (!result || result.savedCount === 0) {
       return res.status(500).json({ error: "Could not save corrective action" });
     }
 
