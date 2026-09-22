@@ -9,6 +9,7 @@ const {
 const { createHttpError } = require("../utils/httpError");
 const {
   loadKpiRowsForUi,
+  getPeopleDisplayName,
   prepareKpiWritePayload,
   resolveSubjectIdForKpiPayload,
   upsertPrimarySubjectKpiLink,
@@ -2584,6 +2585,677 @@ router.get("/api/responsibles/:responsibleId/kpi-form", async (req, res) => {
     console.error("GET /api/responsibles/:responsibleId/kpi-form error:", err.message);
     res.status(err.statusCode || 500).json({
       error: err.statusCode ? err.message : "Failed to load the KPI entry form."
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/responsibles/:responsibleId/dashboard-context
+//
+// Bootstrap payload for the original GET /responsible/:responsibleId/dashboard
+// HTML page (index.js:8548-24318, 15771 lines -- the responsible's KPI /
+// target-allocation admin console). That page ran four loaders server-side and
+// inlined their results into the markup as JS consts:
+//   loadFormResponsibleContext(responsibleId)  -> `responsibleName`/`responsibleId`
+//   loadRoleOptions()                          -> `roleOptions`
+//   loadKpiTargetAllocationLookups()           -> `allocationLookups`
+//   loadSubjectHierarchyData()                 -> `kpiSubjectHierarchy`
+// Nothing in Etape 1 exposed roleOptions or allocationLookups as JSON, and the
+// whole target-allocation matrix (unit / role / zone / product-line scopes,
+// responsible resolution from people_role_assignment) is driven by them, so the
+// React page cannot work without this endpoint.
+//
+// This is a faithful port of loadRoleOptions (index.js:3388) and
+// loadKpiTargetAllocationLookups (index.js:3403): same SQL, same shaping. All
+// tables it touches (role, unit, unit_type, zone, product_line, product, market,
+// customer, people, people_role_assignment) were verified present in the current
+// database via information_schema -- unlike the legacy public."Responsible" /
+// public."Kpi" tables other parts of this page's domain still reference.
+//
+// The subject hierarchy is intentionally NOT returned: the original's Excel-style
+// subject tree picker is simplified to a plain text field in the React page (same
+// approach already used in KpiAdminPage.jsx), and POST/PUT /api/kpis resolve a
+// subject by name or full path server-side via resolveSubjectIdForKpiPayload.
+// ---------------------------------------------------------------------------
+router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res) => {
+  try {
+    const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
+    if (!responsibleId) {
+      return res.status(400).json({ error: "Missing responsible_id" });
+    }
+
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+
+    const [
+      rolesResult,
+      unitsResult,
+      unitTypesResult,
+      zonesResult,
+      productLinesResult,
+      productsResult,
+      marketsResult,
+      customersResult,
+      peopleResult,
+      multisiteAssignmentsResult,
+      peopleRoleAssignmentsResult,
+      roleScopeAssignmentsResult,
+      productLineAssignmentsResult
+    ] = await Promise.all([
+      pool.query(`
+        SELECT role_id, role_name
+        FROM public.role
+        ORDER BY role_name, role_id
+      `),
+
+      pool.query(`
+        SELECT
+          u.unit_id,
+          u.unit_name,
+          u.unit_type_id,
+          ut.unit_type_name,
+          u.selling_currency,
+          u.operating_currency
+        FROM public.unit u
+        INNER JOIN public.unit_type ut
+          ON ut.unit_type_id = u.unit_type_id
+        WHERE u.status_id = 1
+          AND LOWER(TRIM(ut.unit_type_name)) = 'factory'
+        ORDER BY u.unit_name, u.unit_id
+      `),
+
+      pool.query(`
+        SELECT unit_type_id, unit_type_name
+        FROM public.unit_type
+        ORDER BY unit_type_name, unit_type_id
+      `),
+
+      pool.query(`
+        SELECT
+          z.zone_id,
+          z.zone_name,
+          pra.people_id AS responsible_people_id,
+          pra.role_id AS responsible_role_id,
+          COALESCE(r.role_name, '') AS responsible_role_name,
+          COALESCE(pra.is_primary, false) AS responsible_is_primary,
+          p.name AS responsible_name,
+          p.first_name AS responsible_first_name
+        FROM public.zone z
+        LEFT JOIN public.people_role_assignment pra
+          ON pra.zone_id = z.zone_id
+         AND pra.assignment_status = 'ACTIVE'
+        LEFT JOIN public.people p
+          ON p.people_id = pra.people_id
+        LEFT JOIN public.role r
+          ON r.role_id = pra.role_id
+        ORDER BY
+          z.zone_name,
+          z.zone_id,
+          COALESCE(pra.is_primary, false) DESC,
+          pra.assignment_id DESC,
+          p.name,
+          p.first_name,
+          p.people_id
+      `),
+
+      pool.query(`
+        SELECT product_line_id, product_line_name
+        FROM public.product_line
+        ORDER BY product_line_name, product_line_id
+      `),
+
+      pool.query(`
+        SELECT product_id, product_name
+        FROM public.product
+        ORDER BY product_name, product_id
+      `),
+
+      pool.query(`
+        SELECT market_id, market_name
+        FROM public.market
+        ORDER BY market_name, market_id
+      `),
+
+      pool.query(`
+        SELECT customer_id, customer_name
+        FROM public.customer
+        ORDER BY customer_name, customer_id
+      `),
+
+      pool.query(`
+        SELECT people_id, name, first_name
+        FROM public.people
+        ORDER BY name, first_name, people_id
+      `),
+
+      pool.query(`
+        SELECT
+          u.unit_id,
+          u.unit_name,
+          u.unit_type_id,
+          ut.unit_type_name,
+          u.selling_currency,
+          u.operating_currency,
+          pra.people_id,
+          p.name,
+          p.first_name,
+          pra.role_id,
+          COALESCE(r.role_name, '') AS role_name,
+          COALESCE(pra.is_primary, false) AS is_primary
+        FROM public.unit u
+        INNER JOIN public.unit_type ut
+          ON ut.unit_type_id = u.unit_type_id
+        LEFT JOIN public.people_role_assignment pra
+          ON pra.unit_id = u.unit_id
+         AND COALESCE(pra.assignment_status, 'ACTIVE') = 'ACTIVE'
+         AND (pra.end_date IS NULL OR pra.end_date >= CURRENT_DATE)
+        LEFT JOIN public.people p
+          ON p.people_id = pra.people_id
+        LEFT JOIN public.role r
+          ON r.role_id = pra.role_id
+        WHERE u.status_id = 1
+        ORDER BY
+          ut.unit_type_name,
+          u.unit_name,
+          r.role_name,
+          pra.is_primary DESC,
+          p.name,
+          p.first_name,
+          p.people_id
+      `),
+
+      pool.query(`
+        SELECT
+          pra.assignment_id,
+          pra.people_id,
+          pra.role_id,
+          pra.unit_id,
+          pra.zone_id,
+          pra.market_id,
+          pra.product_line_id,
+          pra.is_primary,
+          pra.assignment_status,
+          p.name,
+          p.first_name,
+          COALESCE(r.role_name, '') AS role_name,
+          u.unit_name,
+          u.unit_type_id,
+          COALESCE(ut.unit_type_name, '') AS unit_type_name,
+          u.selling_currency,
+          u.operating_currency
+        FROM public.people_role_assignment pra
+        JOIN public.people p
+          ON p.people_id = pra.people_id
+        LEFT JOIN public.role r
+          ON r.role_id = pra.role_id
+        LEFT JOIN public.unit u
+          ON u.unit_id = pra.unit_id
+        LEFT JOIN public.unit_type ut
+          ON ut.unit_type_id = u.unit_type_id
+        WHERE COALESCE(pra.assignment_status, 'ACTIVE') = 'ACTIVE'
+          AND (pra.end_date IS NULL OR pra.end_date >= CURRENT_DATE)
+        ORDER BY
+          pra.role_id,
+          pra.is_primary DESC,
+          u.unit_name,
+          p.name,
+          p.first_name,
+          pra.people_id
+      `),
+
+      pool.query(`
+        SELECT
+          pra.assignment_id,
+          pra.people_id,
+          pra.role_id,
+          pra.unit_id,
+          pra.zone_id,
+          pra.market_id,
+          pra.product_line_id,
+          pra.is_primary,
+          pra.assignment_status,
+          pra.start_date,
+          pra.end_date,
+          p.name,
+          p.first_name,
+          COALESCE(r.role_name, '') AS role_name,
+          u.unit_name,
+          u.unit_type_id,
+          COALESCE(ut.unit_type_name, '') AS unit_type_name,
+          u.selling_currency,
+          u.operating_currency
+        FROM public.people_role_assignment pra
+        LEFT JOIN public.people p
+          ON p.people_id = pra.people_id
+        LEFT JOIN public.role r
+          ON r.role_id = pra.role_id
+        LEFT JOIN public.unit u
+          ON u.unit_id = pra.unit_id
+        LEFT JOIN public.unit_type ut
+          ON ut.unit_type_id = u.unit_type_id
+        ORDER BY
+          pra.role_id,
+          pra.assignment_id
+      `),
+
+      pool.query(`
+        SELECT
+          pl.product_line_id,
+          pl.product_line_name,
+          pra.people_id,
+          pra.role_id,
+          COALESCE(r.role_name, '') AS role_name,
+          COALESCE(pra.is_primary, false) AS is_primary,
+          p.name,
+          p.first_name
+        FROM public.product_line pl
+        LEFT JOIN public.people_role_assignment pra
+          ON pra.product_line_id = pl.product_line_id
+         AND pra.assignment_status = 'ACTIVE'
+         AND (pra.end_date IS NULL OR pra.end_date >= CURRENT_DATE)
+        LEFT JOIN public.role r
+          ON r.role_id = pra.role_id
+        LEFT JOIN public.people p
+          ON p.people_id = pra.people_id
+        WHERE LOWER(TRIM(COALESCE(r.role_name, ''))) = 'product line manager'
+        ORDER BY
+          pl.product_line_name,
+          COALESCE(pra.is_primary, false) DESC,
+          p.name,
+          p.first_name,
+          pra.people_id
+      `)
+    ]);
+
+    const roleOptions = rolesResult.rows.map((row) => ({
+      value: String(row.role_id),
+      label: normalizeOptionalTextInput(row.role_name) || `Role ${row.role_id}`
+    }));
+
+    const unitOptions = unitsResult.rows.map((row) => ({
+      value: String(row.unit_id),
+      label: normalizeOptionalTextInput(row.unit_name) || `Unit ${row.unit_id}`,
+      unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id),
+      unit_type_name: normalizeOptionalTextInput(row.unit_type_name) || "",
+      selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
+      operating_currency: normalizeOptionalTextInput(row.operating_currency) || ""
+    }));
+
+    const multisiteAssignmentsMap = new Map(
+      unitOptions.map((unit) => [
+        String(unit.value),
+        {
+          value: String(unit.value),
+          label: unit.label,
+          unit_type_id: unit.unit_type_id,
+          unit_type_name: unit.unit_type_name,
+          selling_currency: unit.selling_currency,
+          operating_currency: unit.operating_currency,
+          responsibles: []
+        }
+      ])
+    );
+
+    multisiteAssignmentsResult.rows.forEach((row) => {
+      const unitId = normalizeOptionalIntegerInput(row.unit_id);
+      if (!unitId) return;
+
+      const unitKey = String(unitId);
+
+      if (!multisiteAssignmentsMap.has(unitKey)) {
+        multisiteAssignmentsMap.set(unitKey, {
+          value: unitKey,
+          label: normalizeOptionalTextInput(row.unit_name) || `Unit ${unitKey}`,
+          unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id),
+          unit_type_name: normalizeOptionalTextInput(row.unit_type_name) || "",
+          selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
+          operating_currency: normalizeOptionalTextInput(row.operating_currency) || "",
+          responsibles: []
+        });
+      }
+
+      if (!normalizeOptionalIntegerInput(row.people_id)) return;
+
+      multisiteAssignmentsMap.get(unitKey).responsibles.push({
+        people_id: String(row.people_id),
+        label: getPeopleDisplayName(row) || `Person ${row.people_id}`,
+        role_id: normalizeOptionalIntegerInput(row.role_id),
+        role_name: normalizeOptionalTextInput(row.role_name) || "",
+        is_primary: Boolean(row.is_primary)
+      });
+    });
+
+    const zoneAssignmentsMap = new Map();
+
+    zonesResult.rows.forEach((row) => {
+      const zoneId = normalizeOptionalIntegerInput(row.zone_id);
+      if (!zoneId) return;
+
+      const zoneKey = String(zoneId);
+
+      if (!zoneAssignmentsMap.has(zoneKey)) {
+        zoneAssignmentsMap.set(zoneKey, {
+          value: zoneKey,
+          zone_id: zoneKey,
+          label: normalizeOptionalTextInput(row.zone_name) || `Zone ${zoneKey}`,
+          zone_name: normalizeOptionalTextInput(row.zone_name) || "",
+          responsable_zone: "",
+          responsible_people_id: "",
+          responsibles: []
+        });
+      }
+
+      const zoneEntry = zoneAssignmentsMap.get(zoneKey);
+      const peopleId = normalizeOptionalIntegerInput(row.responsible_people_id);
+      if (!peopleId) return;
+
+      const normalizedPeopleId = String(peopleId);
+      const responsibleLabel =
+        getPeopleDisplayName({
+          name: row.responsible_name,
+          first_name: row.responsible_first_name
+        }) || `Person ${normalizedPeopleId}`;
+
+      const normalizedRoleId = String(
+        normalizeOptionalIntegerInput(row.responsible_role_id) || ""
+      ).trim();
+
+      if (
+        !zoneEntry.responsibles.some(
+          (entry) =>
+            String(entry.people_id || "") === normalizedPeopleId &&
+            String(entry.role_id || "") === normalizedRoleId
+        )
+      ) {
+        zoneEntry.responsibles.push({
+          people_id: normalizedPeopleId,
+          label: responsibleLabel,
+          role_id: normalizeOptionalIntegerInput(row.responsible_role_id),
+          role_name: normalizeOptionalTextInput(row.responsible_role_name) || "",
+          is_primary: Boolean(row.responsible_is_primary)
+        });
+      }
+
+      if (!zoneEntry.responsible_people_id) {
+        zoneEntry.responsible_people_id = normalizedPeopleId;
+        zoneEntry.responsable_zone = responsibleLabel;
+      }
+    });
+
+    const productLineAssignmentsMap = new Map();
+
+    productLineAssignmentsResult.rows.forEach((row) => {
+      const productLineId = normalizeOptionalIntegerInput(row.product_line_id);
+      if (!productLineId) return;
+
+      const productLineKey = String(productLineId);
+
+      if (!productLineAssignmentsMap.has(productLineKey)) {
+        productLineAssignmentsMap.set(productLineKey, {
+          value: productLineKey,
+          product_line_id: productLineKey,
+          label:
+            normalizeOptionalTextInput(row.product_line_name) ||
+            `Product line ${productLineKey}`,
+          product_line_name: normalizeOptionalTextInput(row.product_line_name) || "",
+          responsible_people_id: "",
+          responsable_product_line: "",
+          responsibles: []
+        });
+      }
+
+      const productLineEntry = productLineAssignmentsMap.get(productLineKey);
+      const peopleId = normalizeOptionalIntegerInput(row.people_id);
+      if (!peopleId) return;
+
+      const responsibleLabel = getPeopleDisplayName(row) || `Person ${peopleId}`;
+
+      productLineEntry.responsibles.push({
+        people_id: String(peopleId),
+        label: responsibleLabel,
+        role_id: normalizeOptionalIntegerInput(row.role_id),
+        role_name: normalizeOptionalTextInput(row.role_name) || "",
+        is_primary: Boolean(row.is_primary)
+      });
+
+      if (!productLineEntry.responsible_people_id) {
+        productLineEntry.responsible_people_id = String(peopleId);
+        productLineEntry.responsable_product_line = responsibleLabel;
+      }
+    });
+
+    const allocationLookups = {
+      plants: unitOptions,
+      units: unitOptions,
+
+      unitTypes: unitTypesResult.rows.map((row) => ({
+        value: String(row.unit_type_id),
+        label:
+          normalizeOptionalTextInput(row.unit_type_name) ||
+          `Unit type ${row.unit_type_id}`
+      })),
+
+      multisiteAssignments: Array.from(multisiteAssignmentsMap.values()),
+      zones: Array.from(zoneAssignmentsMap.values()),
+
+      productLines: productLinesResult.rows.map((row) => {
+        const productLineId = String(row.product_line_id);
+        const assignmentEntry = productLineAssignmentsMap.get(productLineId);
+
+        return {
+          value: productLineId,
+          label:
+            normalizeOptionalTextInput(row.product_line_name) ||
+            `Product line ${productLineId}`,
+          product_line_id: productLineId,
+          product_line_name: normalizeOptionalTextInput(row.product_line_name) || "",
+          responsible_people_id: assignmentEntry?.responsible_people_id || "",
+          responsable_product_line: assignmentEntry?.responsable_product_line || "",
+          responsibles: assignmentEntry?.responsibles || []
+        };
+      }),
+
+      products: productsResult.rows.map((row) => ({
+        value: String(row.product_id),
+        label:
+          normalizeOptionalTextInput(row.product_name) || `Product ${row.product_id}`
+      })),
+
+      markets: marketsResult.rows.map((row) => ({
+        value: String(row.market_id),
+        label:
+          normalizeOptionalTextInput(row.market_name) || `Market ${row.market_id}`
+      })),
+
+      customers: customersResult.rows.map((row) => ({
+        value: String(row.customer_id),
+        label:
+          normalizeOptionalTextInput(row.customer_name) || `Customer ${row.customer_id}`
+      })),
+
+      people: peopleResult.rows.map((row) => ({
+        value: String(row.people_id),
+        label: getPeopleDisplayName(row) || `Person ${row.people_id}`
+      })),
+
+      peopleRoleAssignments: peopleRoleAssignmentsResult.rows.map((row) => ({
+        assignment_id: row.assignment_id,
+        people_id: String(row.people_id),
+        value: String(row.people_id),
+        role_id: normalizeOptionalIntegerInput(row.role_id),
+        unit_id: normalizeOptionalIntegerInput(row.unit_id),
+        zone_id: normalizeOptionalIntegerInput(row.zone_id),
+        market_id: normalizeOptionalIntegerInput(row.market_id),
+        product_line_id: normalizeOptionalIntegerInput(row.product_line_id),
+        is_primary: Boolean(row.is_primary),
+        assignment_status: normalizeOptionalTextInput(row.assignment_status) || "",
+        role_name: normalizeOptionalTextInput(row.role_name) || "",
+        unit_name: normalizeOptionalTextInput(row.unit_name) || "",
+        unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id),
+        unit_type_name: normalizeOptionalTextInput(row.unit_type_name) || "",
+        selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
+        operating_currency: normalizeOptionalTextInput(row.operating_currency) || "",
+        label: getPeopleDisplayName(row) || `Person ${row.people_id}`
+      })),
+
+      roleScopeAssignments: roleScopeAssignmentsResult.rows.map((row) => ({
+        assignment_id: row.assignment_id,
+        people_id: String(row.people_id || ""),
+        value: String(row.people_id || ""),
+        role_id: normalizeOptionalIntegerInput(row.role_id),
+        unit_id: normalizeOptionalIntegerInput(row.unit_id),
+        zone_id: normalizeOptionalIntegerInput(row.zone_id),
+        market_id: normalizeOptionalIntegerInput(row.market_id),
+        product_line_id: normalizeOptionalIntegerInput(row.product_line_id),
+        is_primary: Boolean(row.is_primary),
+        assignment_status: normalizeOptionalTextInput(row.assignment_status) || "",
+        start_date: normalizeOptionalTextInput(row.start_date) || "",
+        end_date: normalizeOptionalTextInput(row.end_date) || "",
+        role_name: normalizeOptionalTextInput(row.role_name) || "",
+        unit_name: normalizeOptionalTextInput(row.unit_name) || "",
+        unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id),
+        unit_type_name: normalizeOptionalTextInput(row.unit_type_name) || "",
+        selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
+        operating_currency: normalizeOptionalTextInput(row.operating_currency) || "",
+        label: getPeopleDisplayName(row) || (row.people_id ? `Person ${row.people_id}` : "")
+      }))
+    };
+
+    res.json({
+      responsible: {
+        people_id: String(responsibleContext?.people_id || responsibleId),
+        name: responsibleContext?.name || "KPI Workspace",
+        plant_name: responsibleContext?.plant_name || "",
+        department_name: responsibleContext?.department_name || "",
+        role_name: responsibleContext?.role_name || ""
+      },
+      role_options: roleOptions,
+      allocation_lookups: allocationLookups
+    });
+  } catch (err) {
+    console.error(
+      "GET /api/responsibles/:responsibleId/dashboard-context error:",
+      err.message
+    );
+    res.status(err.statusCode || 500).json({
+      error: err.statusCode ? err.message : "Failed to load the dashboard context."
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/responsibles/:responsibleId/kpi-monthly-series
+//
+// Live replacement for GET /api/responsibles/:responsibleId/kpi-history-monthly
+// (migrated as-is in Etape 1) which feeds the "My KPI Analytics" chart section of
+// the responsible dashboard page. The original query reads
+// public.kpi_values_hist26 JOIN public."Kpi" -- both confirmed absent from the
+// current database via information_schema -- so that endpoint has been throwing
+// on every request since long before this migration and the charts section has
+// always rendered "No KPI history found for this responsible."
+//
+// This endpoint keeps the original's response shape exactly (one entry per KPI
+// with labels[]/values[]/targetValue/highLimitValue/lowLimitValue/targetDirection,
+// one point per calendar month, latest row of each month) but reads the live
+// source used everywhere else in this codebase: kpi_result joined to
+// kpi_target_allocation (scoped by kta.set_by_people_id, the same scope as
+// GET /api/responsibles/:id/dashboard) and public.kpi.
+// ---------------------------------------------------------------------------
+router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, res) => {
+  try {
+    const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
+    if (!responsibleId) {
+      return res.status(400).json({ error: "Missing responsible_id" });
+    }
+
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
+
+    if (!responsiblePeopleId) {
+      throw createHttpError(404, "Responsible not found");
+    }
+
+    const result = await pool.query(
+      `
+      WITH ranked AS (
+        SELECT
+          kr.kpi_id,
+          DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)) AS month_start,
+          TO_CHAR(
+            DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)),
+            'Mon YYYY'
+          ) AS month_label,
+          kr.raw_value AS value_num,
+          COALESCE(kr.target_value, kta.target_value, k.target_value) AS target,
+          COALESCE(kr.upper_limit, k.high_limit) AS high_limit,
+          COALESCE(kr.lower_limit, k.low_limit) AS low_limit,
+          k.target_direction,
+          COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS indicator_title,
+          COALESCE(k.kpi_sub_title, k.kpi_name, '') AS indicator_sub_title,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              kr.kpi_id,
+              DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at))
+            ORDER BY COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC,
+                     kr.kpi_result_id DESC
+          ) AS rn
+        FROM public.kpi_result kr
+        JOIN public.kpi_target_allocation kta
+          ON kta.kpi_target_allocation_id = kr.kpi_target_allocation_id
+        JOIN public.kpi k
+          ON k.kpi_id = kr.kpi_id
+        WHERE kta.set_by_people_id = $1
+          AND kr.raw_value IS NOT NULL
+      )
+      SELECT
+        kpi_id,
+        indicator_title,
+        indicator_sub_title,
+        high_limit,
+        low_limit,
+        target,
+        target_direction,
+        month_start,
+        month_label,
+        value_num
+      FROM ranked
+      WHERE rn = 1
+      ORDER BY kpi_id, month_start
+      `,
+      [responsiblePeopleId]
+    );
+
+    const grouped = {};
+
+    for (const row of result.rows) {
+      if (!grouped[row.kpi_id]) {
+        grouped[row.kpi_id] = {
+          kpi_id: row.kpi_id,
+          indicator_title: row.indicator_title,
+          indicator_sub_title: row.indicator_sub_title,
+          labels: [],
+          values: [],
+          targetValue:
+            row.target !== null && row.target !== "" ? Number(row.target) : null,
+          highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
+          lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null,
+          targetDirection: row.target_direction || "Up"
+        };
+      }
+
+      grouped[row.kpi_id].labels.push(row.month_label);
+      grouped[row.kpi_id].values.push(Number(row.value_num) || 0);
+    }
+
+    res.json(Object.values(grouped));
+  } catch (err) {
+    console.error(
+      "GET /api/responsibles/:responsibleId/kpi-monthly-series error:",
+      err.message
+    );
+    res.status(err.statusCode || 500).json({
+      error: err.statusCode ? err.message : "Failed to load KPI monthly series."
     });
   }
 });
