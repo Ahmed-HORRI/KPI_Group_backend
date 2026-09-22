@@ -9,6 +9,9 @@ const {
   normalizeCorrectiveActionEstimatedDurationDays,
   normalizeCorrectiveActionImportance,
   normalizeCorrectiveActionUrgency,
+  OPEN_CORRECTIVE_ACTION_STATUS,
+  CLOSED_CORRECTIVE_ACTION_STATUS,
+  sortCorrectiveActions,
 } = require("../services/kpiShared.service");
 const { getOpenAIClient } = require("../config/openai");
 const {
@@ -23,6 +26,7 @@ const {
   updateActionPlanCorrectiveActionStatus,
   ensureLegacyCorrectiveActionsSchema,
   upsertCorrectiveAction,
+  loadActionPlanCorrectiveActionMaps,
 } = require("../services/actionPlan.service");
 
 router.get("/generate-ca-suggestion", async (req, res) => {
@@ -474,6 +478,95 @@ router.post("/api/corrective-actions/submit-bulk", async (req, res) => {
   } catch (err) {
     console.error("Error submitting bulk corrective actions:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// JSON equivalent of the original GET /corrective-actions-list HTML page
+// (Etape 2). The original queried public."Responsible"/"Plant"/"Department"
+// and public.corrective_actions -- confirmed via information_schema that
+// public.corrective_actions, public."Responsible", public."Plant" and
+// public."Department" do not exist in the current database, so that page
+// has thrown on every request since before this migration (not a
+// regression -- same legacy-table pattern already documented for
+// /dashboard-history and /kpi-trends). The real, currently-working
+// corrective-action data lives in the separate Action Plan database
+// (public.action/public.sujet, actionPlanPool), which is what
+// POST /api/corrective-actions/:id/status and the KPI submission flow
+// already read/write via loadActionPlanCorrectiveActionMaps -- this route
+// reuses that same helper instead of the dead legacy table.
+router.get("/api/responsibles/:responsibleId/corrective-actions", async (req, res) => {
+  try {
+    const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
+    if (!responsibleId) {
+      return res.status(400).json({ error: "Missing responsible_id" });
+    }
+
+    const allocationRes = await pool.query(
+      `
+      SELECT
+        kta.kpi_target_allocation_id,
+        kta.kpi_id,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS subject,
+        COALESCE(subject_link.subject_name, k.kpi_sub_title, '') AS indicator_sub_title,
+        COALESCE(kta.target_unit, k.unit) AS unit,
+        COALESCE(kta.target_value, k.target_value) AS target,
+        COALESCE(kta.low_limit, k.low_limit) AS low_limit,
+        COALESCE(kta.high_limit, k.high_limit) AS high_limit,
+        latest_result.value AS current_value,
+        latest_result.week AS current_week
+      FROM public.kpi_target_allocation kta
+      JOIN public.kpi k
+        ON k.kpi_id = kta.kpi_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = kta.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT kr.raw_value AS value, COALESCE(kr.week, kr.period_label) AS week
+        FROM public.kpi_result kr
+        WHERE kr.kpi_target_allocation_id = kta.kpi_target_allocation_id
+        ORDER BY kr.recorded_at DESC NULLS LAST, kr.kpi_result_id DESC
+        LIMIT 1
+      ) latest_result ON TRUE
+      WHERE kta.set_by_people_id = $1
+      `,
+      [responsibleId]
+    );
+
+    const kpiByAllocationId = new Map(
+      allocationRes.rows.map((row) => [String(row.kpi_target_allocation_id), row])
+    );
+
+    const { historyByAllocationId } = await loadActionPlanCorrectiveActionMaps(allocationRes.rows);
+
+    const actions = Object.values(historyByAllocationId)
+      .flat()
+      .filter(
+        (action) =>
+          normalizeCorrectiveActionStatus(action.status, OPEN_CORRECTIVE_ACTION_STATUS) !==
+          CLOSED_CORRECTIVE_ACTION_STATUS
+      )
+      .map((action) => {
+        const kpi = kpiByAllocationId.get(String(action.kpi_target_allocation_id)) || {};
+        return { ...action, kpi };
+      });
+
+    actions.sort((left, right) => {
+      const leftTime = new Date(left.updated_date || left.created_date || 0).getTime();
+      const rightTime = new Date(right.updated_date || right.created_date || 0).getTime();
+      if (rightTime !== leftTime) return rightTime - leftTime;
+      return (right.corrective_action_id || 0) - (left.corrective_action_id || 0);
+    });
+
+    res.json(actions);
+  } catch (err) {
+    console.error("GET /api/responsibles/:responsibleId/corrective-actions error:", err.message);
+    res.status(500).json({ error: "Failed to load corrective actions." });
   }
 });
 
