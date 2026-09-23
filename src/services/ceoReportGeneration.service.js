@@ -47,6 +47,10 @@ const {
   generateVerticalBarChart,
   generateWeeklyReportData,
   DEFAULT_KPI_SUBMISSION_TIMEZONE,
+  WEEKLY_REPORT_MAX_CHARTS,
+  truncateWeeklyReportText,
+  escapeWeeklyReportText,
+  formatWeeklyReportWeekLabel,
 } = require("./kpiSubmissionEmail.service");
 
 function getCurrentWeek(date = new Date()) {
@@ -2143,6 +2147,9 @@ async function sendConsolidatedManagerReport(manager, directReportPeopleIds, cur
 // and send ONE combined email per manager.
 // ---------------------------------------------------------------------------
 async function runHierarchyKpiReports(frequency, options = {}) {
+  // Required lazily (not at module top-level) because hierarchyReport.service.js
+  // itself requires this file -- a top-level require here would be circular.
+  const { getPeopleHierarchy } = require("./hierarchyReport.service");
   const normalizedFrequency = normalizeOptionalTextInput(frequency) || "Weekly";
   const currentWeek =
     normalizeOptionalTextInput(options.reportWeek) || getPreviousWeek(getCurrentWeek());
@@ -2260,4 +2267,6 @@ module.exports = {
   runHierarchyKpiReports,
   getPreviousWeek,
   CEO_REPORT_RECIPIENT_EMAIL,
+  weekToMonthLabel,
+  hasMeaningfulManagerReportCorrectiveAction,
 };

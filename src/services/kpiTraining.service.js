@@ -5,6 +5,13 @@ const { createTransporter } = require("../config/mailer");
 const { getPeopleDisplayName } = require("../models/kpi.model");
 const { escapeHtml, formatDisplayDate } = require("./kpiShared.service");
 const { formatIsoDateValue } = require("../utils/weekPeriod");
+const { getPeopleHierarchy } = require("./hierarchyReport.service");
+
+const toArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null) return [];
+  return [value];
+};
 
 const KPI_TRAINING_DEFAULT_TEST_DUE_DAYS = 7;
 const KPI_TRAINING_REMINDER_INTERVAL_DAYS = 7;

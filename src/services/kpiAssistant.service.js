@@ -14,6 +14,12 @@ const {
 const { getOpenAIClient } = require("../config/openai");
 const { buildDelayKnowledgeBaseContext } = require("./delayKnowledgeBase.service");
 const { buildKpiAssistantKnowledgeContext, formatKpiAssistantGuidedQuestion } = require("./kpiAssistantGuides.service");
+const {
+  buildKnowledgeBaseKeywordList,
+  uniqueKnowledgeBaseTexts,
+  normalizeKnowledgeBaseSearchText,
+  tokenizeKnowledgeBaseText,
+} = require("./kpiKnowledgeBase.service");
 
 const ASSISTANT_EMPTY_TEXT_VALUES = new Set([
   "null",

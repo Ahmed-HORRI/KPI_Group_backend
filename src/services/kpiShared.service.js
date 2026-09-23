@@ -9,6 +9,27 @@ const {
 } = require("../utils/weekPeriod");
 const { KPI_IMPORTANCE_OPTIONS } = require("../models/kpi.model");
 
+// Mirrors index.js:22's module-level `port` (used by buildAbsoluteAppUrl's
+// fallback host below).
+const port = process.env.PORT || 5000;
+
+const KPI_DIRECTION_OVERRIDES = Object.freeze({
+  // Add explicit overrides here if a KPI direction should not be inferred.
+  // Example: 11: "down"
+});
+
+const DOWN_DIRECTION_PATTERNS = [
+  /\bclaims?\b/i,
+  /\bbacklog\b/i,
+  /\bstock\b/i,
+  /\binventory\b/i,
+  /\bcosts?\b/i,
+  /\bfees?\b/i,
+  /\bmore than\b/i,
+  /\bdelay\b/i,
+  /\blate\b/i,
+];
+
 const isPercentageUnit = (unit) => {
   const normalizedUnit = String(unit ?? '').trim().toLowerCase();
   return normalizedUnit === '%' || normalizedUnit === 'percent' || normalizedUnit === 'percentage' || normalizedUnit === 'pct';

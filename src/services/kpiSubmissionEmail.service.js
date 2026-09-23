@@ -2,7 +2,11 @@ const { pool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
 const { createTransporter } = require("../config/mailer");
 const { getPeopleDisplayName } = require("../models/kpi.model");
-const { formatIsoDateValue } = require("../utils/weekPeriod");
+const {
+  formatIsoDateValue,
+  getCurrentWeekFromPseudoDate,
+  getCurrentFormWeekFromPseudoDate,
+} = require("../utils/weekPeriod");
 const {
   getKpiStatus,
   getDotColor,
@@ -10,7 +14,28 @@ const {
   needsCorrectiveAction,
   getReadableThresholdLineValues,
   getAutoChartAxisRange,
+  escapeHtml,
+  normalizeKpiDirection,
+  sortCorrectiveActions,
+  getKpiGoodDirectionMeta,
 } = require("./kpiShared.service");
+const { loadFormResponsibleContext } = require("../models/responsible.model");
+
+// actionPlan.service.js and ceoReportGeneration.service.js both require this
+// file at module top-level, so requiring them back the same way would be
+// circular and could capture `undefined` depending on load order. Required
+// lazily (memoized) instead -- by the time any of these run, both modules
+// have finished loading.
+let _actionPlanService = null;
+function getActionPlanService() {
+  if (!_actionPlanService) _actionPlanService = require("./actionPlan.service");
+  return _actionPlanService;
+}
+let _ceoReportGenerationService = null;
+function getCeoReportGenerationService() {
+  if (!_ceoReportGenerationService) _ceoReportGenerationService = require("./ceoReportGeneration.service");
+  return _ceoReportGenerationService;
+}
 
 let kpiSubmissionEmailDispatchLogSchemaPromise = null;
 
@@ -109,7 +134,7 @@ const sendKPIEmail = async (responsibleId, week, options = {}) => {
       unitId,
     });
 
-    const { responsible, kpis } = await getResponsibleWithKPIs(responsibleId, week, {
+    const { responsible, kpis } = await getActionPlanService().getResponsibleWithKPIs(responsibleId, week, {
       calculationMode,
       frequency: frequencyLabel,
       unitId,
@@ -136,7 +161,7 @@ const sendKPIEmail = async (responsibleId, week, options = {}) => {
       return false;
     }
 
-    const html = generateEmailHtml({
+    const html = getActionPlanService().generateEmailHtml({
       responsible: {
         ...responsible,
         unit_id: unitId,
@@ -833,7 +858,7 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
       .slice(0, WEEKLY_REPORT_MAX_COMMENTS)
       .map((entry) => ({
         weekLabel:
-          weekToMonthLabel(entry?.week || "") ||
+          getCeoReportGenerationService().weekToMonthLabel(entry?.week || "") ||
           formatWeeklyReportWeekLabel(entry?.week || "") ||
           "Period",
         text: truncateWeeklyReportText(entry?.text || "", 280)
@@ -843,7 +868,7 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
       .slice(0, WEEKLY_REPORT_MAX_CORRECTIVE_ACTIONS)
       .map((entry) => ({
         weekLabel:
-          weekToMonthLabel(entry?.week || "") ||
+          getCeoReportGenerationService().weekToMonthLabel(entry?.week || "") ||
           formatWeeklyReportWeekLabel(entry?.week || "") ||
           "Period",
         status: truncateWeeklyReportText(entry?.status || "Open", 60),
@@ -1311,7 +1336,7 @@ const generateVerticalBarChart = (chartData, options = {}) => {
       ${comments.map(c => `
         <div style="margin-bottom:12px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:4px solid #0078D7;">
           <div style="font-size:11px;font-weight:600;color:#0078D7;margin-bottom:6px;">
-           ${weekToMonthLabel(c.week || '') || (c.week || '').replace('2026-Week', 'Week ')}
+           ${getCeoReportGenerationService().weekToMonthLabel(c.week || '') || (c.week || '').replace('2026-Week', 'Week ')}
           </div>
           <div style="font-size:13px;color:#2c3e50;">${c.text}</div>
         </div>
@@ -1332,7 +1357,7 @@ const generateVerticalBarChart = (chartData, options = {}) => {
       ${correctiveActions.map(ca => `
        <div style="margin-bottom:18px;padding:18px 20px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;line-height:1.55;">
        <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
-         ${ca.week ? weekToMonthLabel(ca.week) : 'N/A'}
+         ${ca.week ? getCeoReportGenerationService().weekToMonthLabel(ca.week) : 'N/A'}
          ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
           </div>
           ${ca.root_cause ? `
@@ -1610,7 +1635,7 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
     const {
       currentByAllocationId,
       historyByAllocationId
-    } = await loadActionPlanCorrectiveActionMaps(currentPeriodRes.rows, reportWeek);
+    } = await getActionPlanService().loadActionPlanCorrectiveActionMaps(currentPeriodRes.rows, reportWeek);
 
     const historyRes = await pool.query(
       `
@@ -1666,7 +1691,7 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
       historyRows.forEach((historyRow) => {
         const numericValue = Number(historyRow.new_value);
         if (Number.isFinite(numericValue) && numericValue > 0) {
-          const monthLabel = weekToMonthLabel(historyRow.week);
+          const monthLabel = getCeoReportGenerationService().weekToMonthLabel(historyRow.week);
           if (!monthMap[monthLabel]) {
             monthMap[monthLabel] = { sum: 0, count: 0 };
           }
@@ -1724,12 +1749,13 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
       const meaningfulCorrectiveActions = [];
       const seenCorrectiveActions = new Set();
 
+      const isMeaningfulManagerReportCorrectiveAction = getCeoReportGenerationService().hasMeaningfulManagerReportCorrectiveAction;
       [
         ...sortCorrectiveActions(
-          (Array.isArray(currentActions) ? currentActions : []).filter(hasMeaningfulManagerReportCorrectiveAction)
+          (Array.isArray(currentActions) ? currentActions : []).filter(isMeaningfulManagerReportCorrectiveAction)
         ),
         ...sortCorrectiveActions(
-          (Array.isArray(historyActions) ? historyActions : []).filter(hasMeaningfulManagerReportCorrectiveAction)
+          (Array.isArray(historyActions) ? historyActions : []).filter(isMeaningfulManagerReportCorrectiveAction)
         )
       ].forEach((action) => {
         const actionKey = [
@@ -1816,4 +1842,8 @@ module.exports = {
   generateVerticalBarChart,
   generateWeeklyReportData,
   DEFAULT_KPI_SUBMISSION_TIMEZONE,
+  WEEKLY_REPORT_MAX_CHARTS,
+  truncateWeeklyReportText,
+  escapeWeeklyReportText,
+  formatWeeklyReportWeekLabel,
 };
