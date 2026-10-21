@@ -569,32 +569,24 @@ const runWeeklyKpiSubmissionCron = async ({
 };
 
 
-// DISABLE_CRON_JOBS=true (local runs against the shared production database):
-// these jobs send real e-mails and record the dispatch in the shared log.
-const cronJobsDisabled = String(process.env.DISABLE_CRON_JOBS || "").trim().toLowerCase() === "true";
-if (cronJobsDisabled) {
-  console.log("[KPI Reminder] Weekly KPI submission cron disabled (DISABLE_CRON_JOBS=true).");
-}
+//cron.schedule("*/5 * * * *", async () => {
+  //await runWeeklyKpiSubmissionCron({
+  //  calculationMode: "Ratio",
+ //   lockId: "send_kpi_weekly_email_ratio_job",
+  //  stateKey: "ratio",
+   // logLabel: "Ratio"
+  //});
 
-cron.schedule("*/5 * * * *", async () => {
-  if (cronJobsDisabled) return;
-  await runWeeklyKpiSubmissionCron({
-    calculationMode: "Ratio",
-    lockId: "send_kpi_weekly_email_ratio_job",
-    stateKey: "ratio",
-    logLabel: "Ratio"
-  });
-
-  await runWeeklyKpiSubmissionCron({
-    calculationMode: "Direct",
-    lockId: "send_kpi_weekly_email_direct_job",
-    stateKey: "direct",
-    logLabel: "Direct"
-  });
-}, {
-  scheduled: true,
-  timezone: "UTC"
-});
+  //await runWeeklyKpiSubmissionCron({
+   // calculationMode: "Direct",
+   // lockId: "send_kpi_weekly_email_direct_job",
+   // stateKey: "direct",
+ //   logLabel: "Direct"
+ // });
+//}, {
+  //scheduled: true,
+ /// timezone: "UTC"
+//});
 
 // ---------- Cron: weekly reports ----------
 // let reportCronRunning = false;
