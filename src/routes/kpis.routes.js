@@ -27,6 +27,11 @@ const {
   deleteStoredKpiFile,
 } = require("../services/kpiFile.service");
 const { openai } = require("../config/openai");
+const { actorFromRequest, createKpiChangeLog } = require("../services/kpiChangeLog.service");
+
+// Trace of the KPIs created, updated or deleted from the open /kpi-admin page
+// (signed-in account if any, else anonymous + IP).
+const kpiChangeLog = createKpiChangeLog({ db: pool });
 const {
   loadKpiKnowledgeBaseForAssistant,
   buildStoredKpiKnowledgeBaseContext,
@@ -409,6 +414,12 @@ router.post("/api/kpis", async (req, res) => {
     await refreshKpiKnowledgeBaseForKpiId(client, newKpi.kpi_id, {
       reason: "kpi_created"
     });
+    await kpiChangeLog.record(client, {
+      entityType: "kpi",
+      before: new Map(),
+      after: await kpiChangeLog.snapshotKpis(client, [newKpi.kpi_id]),
+      actor: actorFromRequest(req, "kpi_admin")
+    });
 
     await client.query("COMMIT");
     const rows = await loadKpiRowsForUi({ kpiId: newKpi.kpi_id });
@@ -502,6 +513,7 @@ router.put("/api/kpis/:id", async (req, res) => {
       return res.status(404).json({ error: "KPI not found" });
     }
 
+    const kpiBefore = await kpiChangeLog.snapshotKpis(client, [req.params.id]);
     const existingFilePath = normalizeOptionalTextInput(existingKpiResult.rows[0].file);
     let nextFilePath = existingFilePath;
 
@@ -599,6 +611,12 @@ router.put("/api/kpis/:id", async (req, res) => {
     await refreshKpiKnowledgeBaseForKpiId(client, Number(req.params.id), {
       reason: "kpi_updated"
     });
+    await kpiChangeLog.record(client, {
+      entityType: "kpi",
+      before: kpiBefore,
+      after: await kpiChangeLog.snapshotKpis(client, [req.params.id]),
+      actor: actorFromRequest(req, "kpi_admin")
+    });
     await client.query("COMMIT");
 
     if (replacedFilePath && replacedFilePath !== nextFilePath) {
@@ -632,6 +650,8 @@ router.delete("/api/kpis/:id", async (req, res) => {
     client = await pool.connect();
     await client.query("BEGIN");
 
+    const kpiBefore = await kpiChangeLog.snapshotKpis(client, [req.params.id]);
+    const allocationCount = (await kpiChangeLog.allocationIdsOfKpi(client, req.params.id)).length;
     await deleteKpiDependentRecords(client, req.params.id);
 
     const result = await client.query(
@@ -645,6 +665,13 @@ router.delete("/api/kpis/:id", async (req, res) => {
     }
 
     deletedFilePath = normalizeOptionalTextInput(result.rows[0].file);
+    await kpiChangeLog.record(client, {
+      entityType: "kpi",
+      before: kpiBefore,
+      after: new Map(),
+      actor: actorFromRequest(req, "kpi_admin"),
+      note: allocationCount ? `Its ${allocationCount} target allocation(s) were deleted with it.` : null
+    });
     await client.query("COMMIT");
     if (deletedFilePath) {
       await deleteStoredKpiFile(deletedFilePath);

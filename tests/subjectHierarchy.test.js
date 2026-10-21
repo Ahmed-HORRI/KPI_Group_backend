@@ -51,6 +51,7 @@ test("dashboard context exposes the active hierarchy alongside existing lookups"
       };
       if (name.startsWith("../utils/")) return require(path.join(__dirname, "../src/routes", name));
       if (name === "../services/kpiAnalyticsScope.service") return require(path.join(__dirname, "../src/routes", name));
+      if (name === "../services/kpiChangeLog.service") return require(path.join(__dirname, "../src/routes", name));
       return {};
     },
   });

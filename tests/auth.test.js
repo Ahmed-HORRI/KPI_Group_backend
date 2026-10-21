@@ -517,12 +517,16 @@ test("only administrators can use the admin API", async () => {
     ["GET", "/api/admin/users"],
     ["POST", "/api/admin/users"],
     ["GET", "/api/admin/auth-events"],
-    ["GET", "/api/admin/people?search=ah"]
+    ["GET", "/api/admin/people?search=ah"],
+    ["GET", "/api/admin/kpi-changes"]
   ]) {
     const res = await regular.request(method, path, method === "POST" ? { body: {} } : {});
     assert.equal(res.status, 403, `${method} ${path}`);
     assert.equal(res.json.code, "ADMIN_REQUIRED");
   }
+  const changes = await admin.get("/api/admin/kpi-changes?entity_type=kpi&action=updated&search=scrap");
+  assert.equal(changes.status, 200, changes.text);
+  assert.ok(Array.isArray(changes.json.changes));
 });
 
 test("invitation: the account works only once the user has chosen a password", async () => {

@@ -2,12 +2,15 @@ const { createAuthService } = require("./services/auth.service");
 const { createAuthMiddleware } = require("./middlewares/auth.middleware");
 const { createAuthRouter } = require("./routes/auth.routes");
 const { createAdminRouter } = require("./routes/admin.routes");
+const { createKpiChangeLog } = require("./services/kpiChangeLog.service");
 
 // Mounts authentication on the app. Must run before any other route is
 // registered, so the routes listed in PROTECTED_ROUTES
 // (middlewares/auth.middleware.js) are checked whatever router defines them.
 const installAuth = (app, { db, sendMail, config, now, logger = console }) => {
   const authService = createAuthService({ db, sendMail, config, now, logger });
+  // Read by the administration ("KPI changes" tab); written by the KPI routes.
+  const kpiChangeLog = createKpiChangeLog({ db });
   const { attachSession, verifyOrigin, requireAuthentication, requireAdmin } = createAuthMiddleware({
     authService,
     config,
@@ -18,9 +21,9 @@ const installAuth = (app, { db, sendMail, config, now, logger = console }) => {
   app.use(verifyOrigin);
   app.use(createAuthRouter({ authService, config }));
   app.use(requireAuthentication);
-  app.use(createAdminRouter({ authService, requireAdmin }));
+  app.use(createAdminRouter({ authService, requireAdmin, kpiChangeLog }));
 
-  return { authService };
+  return { authService, kpiChangeLog };
 };
 
 module.exports = { installAuth };

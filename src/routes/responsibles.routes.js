@@ -9,6 +9,11 @@ const {
 const { createHttpError } = require("../utils/httpError");
 const { filterActiveSubjectTree } = require("../utils/subjectHierarchy");
 const { createKpiAnalyticsScope } = require("../services/kpiAnalyticsScope.service");
+const { actorFromRequest, createKpiChangeLog } = require("../services/kpiChangeLog.service");
+
+// Trace of every KPI / target allocation created, updated or deleted here
+// (administration, tab "KPI changes"), written in the same transaction.
+const kpiChangeLog = createKpiChangeLog({ db: pool });
 const {
   loadKpiRowsForUi,
   loadSubjectHierarchyData,
@@ -332,7 +337,12 @@ VALUES (
       reason: "responsible_kpi_created"
     });
 
-
+    await kpiChangeLog.record(client, {
+      entityType: "kpi",
+      before: new Map(),
+      after: await kpiChangeLog.snapshotKpis(client, [newKpi.kpi_id]),
+      actor: actorFromRequest(req, "dashboard")
+    });
     await client.query("COMMIT");
     const rows = await loadKpiRowsForUi({
       kpiId: newKpi.kpi_id,
@@ -484,6 +494,7 @@ router.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
       return res.status(404).json({ error: "KPI not found" });
     }
 
+    const kpiBefore = await kpiChangeLog.snapshotKpis(client, [kpiId]);
     const existingFilePath = normalizeOptionalTextInput(existingKpiResult.rows[0].file);
     let nextFilePath = existingFilePath;
 
@@ -583,6 +594,12 @@ router.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
     await refreshKpiKnowledgeBaseForKpiId(client, Number(kpiId), {
       reason: "responsible_kpi_updated"
     });
+    await kpiChangeLog.record(client, {
+      entityType: "kpi",
+      before: kpiBefore,
+      after: await kpiChangeLog.snapshotKpis(client, [kpiId]),
+      actor: actorFromRequest(req, "dashboard")
+    });
     await client.query("COMMIT");
 
     if (replacedFilePath && replacedFilePath !== nextFilePath) {
@@ -643,6 +660,8 @@ router.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) =
       return res.status(404).json({ error: "KPI not found" });
     }
 
+    const kpiBefore = await kpiChangeLog.snapshotKpis(client, [kpiId]);
+    const allocationCount = (await kpiChangeLog.allocationIdsOfKpi(client, kpiId)).length;
     await deleteKpiDependentRecords(client, kpiId);
 
     const result = await client.query(
@@ -661,6 +680,13 @@ router.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) =
     }
 
     deletedFilePath = normalizeOptionalTextInput(result.rows[0].file);
+    await kpiChangeLog.record(client, {
+      entityType: "kpi",
+      before: kpiBefore,
+      after: new Map(),
+      actor: actorFromRequest(req, "dashboard"),
+      note: allocationCount ? `Its ${allocationCount} target allocation(s) were deleted with it.` : null
+    });
     await client.query("COMMIT");
     if (deletedFilePath) {
       await deleteStoredKpiFile(deletedFilePath);
@@ -904,6 +930,12 @@ router.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => 
     await refreshKpiKnowledgeBases(client, Array.from(touchedKpiIds), {
       reason: "target_allocation_created"
     });
+    await kpiChangeLog.record(client, {
+      entityType: "target_allocation",
+      before: new Map(),
+      after: await kpiChangeLog.snapshotAllocations(client, insertedIds),
+      actor: actorFromRequest(req, "dashboard")
+    });
     await client.query("COMMIT");
 
     // await sendKpiTargetAllocationAssignmentNotifications({
@@ -1141,6 +1173,10 @@ router.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
     const normalizedAnchorKpiType = String(
       normalizeOptionalTextInput(anchorExistingRow?.kpi_type) || ""
     ).trim().toLowerCase();
+    const allocationsBefore = await kpiChangeLog.snapshotAllocations(
+      client,
+      availableExistingRows.map((row) => row.kpi_target_allocation_id)
+    );
     const resultingAllocationIds = [];
     const notificationAllocationIds = [];
     const matchedExistingAllocationIds = new Set();
@@ -1325,6 +1361,12 @@ router.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
     await refreshKpiKnowledgeBases(client, Array.from(touchedKpiIds), {
       reason: "target_allocation_updated"
     });
+    await kpiChangeLog.record(client, {
+      entityType: "target_allocation",
+      before: allocationsBefore,
+      after: await kpiChangeLog.snapshotAllocations(client, [...allocationsBefore.keys(), ...resultingAllocationIds]),
+      actor: actorFromRequest(req, "dashboard")
+    });
     await client.query("COMMIT");
     transactionCompleted = true;
 
@@ -1410,6 +1452,7 @@ router.delete("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async
     client = await pool.connect();
     await client.query("BEGIN");
 
+    const allocationsBefore = await kpiChangeLog.snapshotAllocations(client, groupIds);
     await deleteKpiTargetAllocationDependentRecords(client, groupIds);
 
     const result = await client.query(
@@ -1431,6 +1474,12 @@ router.delete("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async
       result.rows.map((row) => row.kpi_id),
       { reason: "target_allocation_deleted" }
     );
+    await kpiChangeLog.record(client, {
+      entityType: "target_allocation",
+      before: allocationsBefore,
+      after: await kpiChangeLog.snapshotAllocations(client, groupIds),
+      actor: actorFromRequest(req, "dashboard")
+    });
     await client.query("COMMIT");
 
     res.json({

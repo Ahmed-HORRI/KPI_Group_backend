@@ -2,7 +2,7 @@ const express = require("express");
 const { getRequestMeta } = require("../middlewares/auth.middleware");
 
 // User administration: every route here requires an administrator session.
-const createAdminRouter = ({ authService, requireAdmin }) => {
+const createAdminRouter = ({ authService, requireAdmin, kpiChangeLog }) => {
   const router = express.Router();
 
   router.use("/api/admin", requireAdmin, (_req, res, next) => {
@@ -108,6 +108,21 @@ const createAdminRouter = ({ authService, requireAdmin }) => {
         events: await authService.listEvents({
           userId: req.query.user_id,
           eventType: req.query.event_type,
+          limit: req.query.limit
+        })
+      });
+    })
+  );
+
+  // KPI and target allocation changes: what, when, by whom (newest first).
+  router.get(
+    "/api/admin/kpi-changes",
+    handle("GET /api/admin/kpi-changes", async (req, res) => {
+      res.json({
+        changes: await kpiChangeLog.list({
+          entityType: req.query.entity_type,
+          action: req.query.action,
+          search: req.query.search,
           limit: req.query.limit
         })
       });

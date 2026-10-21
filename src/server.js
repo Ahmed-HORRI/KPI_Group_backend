@@ -48,7 +48,7 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "40mb" }));
 // the user administration (PROTECTED_ROUTES in middlewares/auth.middleware.js)
 // require a session whatever router defines them. Every other route stays public.
 let authTransporter = null;
-const { authService } = installAuth(app, {
+const { authService, kpiChangeLog } = installAuth(app, {
   db: pool,
   config: authConfig,
   sendMail: (message) => {
@@ -96,6 +96,15 @@ authService
   })
   .catch((error) => {
     console.error("[Auth] Schema setup failed:", error.message);
+  });
+
+kpiChangeLog
+  .ensureSchema()
+  .then(() => {
+    console.log("[KPI change log] Table is ready.");
+  })
+  .catch((error) => {
+    console.error("[KPI change log] Schema setup failed:", error.message);
   });
 
 ensureKpiTrainingEscalationSchema()

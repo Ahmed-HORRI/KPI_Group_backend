@@ -17,6 +17,10 @@ const {
   loadKpiTargetAdjustmentProposalByToken,
   sendKpiTargetAdjustmentDecisionEmail,
 } = require("../services/kpiTargetAdjustment.service");
+const { actorFromRequest, createKpiChangeLog } = require("../services/kpiChangeLog.service");
+
+// An approved adjustment changes the target allocation: traced, by its approver.
+const kpiChangeLog = createKpiChangeLog({ db: pool });
 
 // Ported from the monolith's app.get("/kpi-target-adjustments/review", ...)
 // (index.js). Returns the proposal as JSON instead of a server-rendered
@@ -147,6 +151,7 @@ router.post("/api/kpi-target-adjustments/decision", async (req, res) => {
         }
       }
 
+      const allocationBefore = await kpiChangeLog.snapshotAllocations(client, [proposal.kpi_target_allocation_id]);
       await client.query(
         `
         UPDATE public.kpi_target_allocation
@@ -170,6 +175,17 @@ router.post("/api/kpi-target-adjustments/decision", async (req, res) => {
           normalizeOptionalIntegerInput(proposal.approver_people_id)
         ]
       );
+      // The decision belongs to the approver of the e-mail link, whoever is signed in.
+      await kpiChangeLog.record(client, {
+        entityType: "target_allocation",
+        before: allocationBefore,
+        after: await kpiChangeLog.snapshotAllocations(client, [proposal.kpi_target_allocation_id]),
+        actor: {
+          ...actorFromRequest(null, "target_review"),
+          peopleId: normalizeOptionalIntegerInput(proposal.approver_people_id),
+          ip: req.ip || null
+        }
+      });
       await client.query(
         `
         UPDATE public.kpi_target_adjustment_proposal

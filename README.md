@@ -52,6 +52,7 @@ Avec `--invite` à la place, le script envoie un mail d'invitation. Si l'envoi
 | CSRF | Requêtes d'écriture avec cookie refusées si l'en-tête `Origin` n'est pas dans `FRONTEND_URL`. |
 | Garde-fous admin | Il reste toujours au moins un administrateur actif ; un admin ne peut ni se rétrograder, ni se désactiver, ni se supprimer. |
 | Audit | Connexions, échecs, réinitialisations et actions d'administration sont enregistrés dans `kpi_app_auth_event`, consultables dans l'onglet « Activity log ». |
+| Traçabilité KPI | Chaque création, modification ou suppression d'un KPI ou d'une target allocation faite par cette application (Responsible KPI Dashboard, page `/kpi-admin`, approbation d'un ajustement de cible) est enregistrée dans `kpi_app_change_log` : quoi, quand, par qui (compte connecté, approbateur du lien, sinon anonyme + IP) et, pour une modification, les champs changés (avant → après). L'écriture se fait dans la même transaction que le changement (`services/kpiChangeLog.service.js`). Onglet « KPI changes », administrateurs seulement. Les changements faits par le monolithe en production ou directement en SQL ne sont pas tracés. |
 
 Variables d'environnement : voir `.env.example` (section Authentification).
 Derrière le proxy Azure, mettre `TRUST_PROXY=1` pour que la limitation par IP
