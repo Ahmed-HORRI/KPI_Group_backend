@@ -4,7 +4,7 @@ const { pool } = require("../config/db");
 const { normalizeOptionalIntegerInput, normalizeOptionalTextInput } = require("../utils/normalize");
 const {
   sendDepartmentKPIReportEmail,
-  getCurrentWeek,
+  getCurrentFormWeek,
   getDepartmentKPIReport,
   CEO_REPORT_RECIPIENT_EMAIL,
 } = require("../services/ceoReportGeneration.service");
@@ -410,14 +410,58 @@ router.get("/api/ceo-kpi/dashboard", async (req, res) => {
 // JSON equivalent of the original GET /ceo-report/plants/:plantId HTML preview
 // page, for the React frontend (Etape 2) -- returns the report data instead of
 // rendering generateManagerReportHtml() server-side.
+//
+// Deliberate deviation from the original: the default week (when none is
+// given) now uses getCurrentFormWeek() -- the same Friday-cutover-aware
+// "most recently submittable week" the KPI entry form defaults to -- instead
+// of the original's raw getCurrentWeek(). The original's plain calendar week
+// has no submitted data until the Friday cutover, so browsing this route
+// without an explicit ?week= 404s for every plant on Sun-Thu; the original
+// was never hit this way (only via generated report links that always
+// carried an explicit week), so this bug never showed up until this route
+// got a real UI entry point (the Responsible dashboard's Report Dashboard
+// link).
+// Latest weekly period ("YYYY-WeekNN") that has a numeric KPI result for the
+// plant, using the same plant scoping as getDepartmentKPIReport(). Monthly
+// periods ("2026-10", "Oct 2026") are skipped: they would show only the
+// monthly KPIs under a "Current Week" label.
+const getLatestReportWeekForPlant = async (plantId) => {
+  const result = await pool.query(
+    `
+    SELECT kr.week
+    FROM public.kpi_target_allocation kta
+    LEFT JOIN public.people owner
+      ON owner.people_id = COALESCE(kta.created_by_people_id, kta.set_by_people_id)
+    JOIN public.kpi_result kr
+      ON kr.kpi_target_allocation_id = kta.kpi_target_allocation_id
+    WHERE COALESCE(kta.plant_id, owner.work_at_unit_id) = $1
+      AND kr.week ~ '^[0-9]{4}-Week[0-9]{1,2}$'
+      AND kr.raw_value IS NOT NULL
+      AND CAST(kr.raw_value AS TEXT) ~ '^[0-9.]+$'
+    ORDER BY
+      SPLIT_PART(kr.week, '-Week', 1)::integer DESC,
+      SPLIT_PART(kr.week, '-Week', 2)::integer DESC
+    LIMIT 1
+    `,
+    [plantId]
+  );
+  return result.rows[0]?.week || null;
+};
+
 router.get("/api/ceo-report/plants/:plantId", async (req, res) => {
   try {
     const plantId = normalizeOptionalIntegerInput(req.params.plantId);
-    const reportWeek = normalizeOptionalTextInput(req.query?.week) || getCurrentWeek();
 
     if (!plantId) {
       return res.status(400).json({ error: "Invalid plantId" });
     }
+
+    // Without an explicit ?week=, show the latest week that has data for this
+    // plant: the current form week has no results until people submit it.
+    const reportWeek =
+      normalizeOptionalTextInput(req.query?.week) ||
+      (await getLatestReportWeekForPlant(plantId)) ||
+      getCurrentFormWeek();
 
     const reportData = await getDepartmentKPIReport(plantId, reportWeek);
     if (!reportData || reportData.stats.totalKPIs === 0) {
@@ -441,7 +485,7 @@ router.post("/api/ceo-report/plants/:plantId/send", async (req, res) => {
     const plantId = normalizeOptionalIntegerInput(req.params.plantId);
     const reportWeek =
       normalizeOptionalTextInput(req.body?.week ?? req.query?.week) ||
-      getCurrentWeek();
+      getCurrentFormWeek();
 
     if (!plantId) {
       return res.status(400).json({ error: "Invalid plantId" });

@@ -569,7 +569,15 @@ const runWeeklyKpiSubmissionCron = async ({
 };
 
 
+// DISABLE_CRON_JOBS=true (local runs against the shared production database):
+// these jobs send real e-mails and record the dispatch in the shared log.
+const cronJobsDisabled = String(process.env.DISABLE_CRON_JOBS || "").trim().toLowerCase() === "true";
+if (cronJobsDisabled) {
+  console.log("[KPI Reminder] Weekly KPI submission cron disabled (DISABLE_CRON_JOBS=true).");
+}
+
 cron.schedule("*/5 * * * *", async () => {
+  if (cronJobsDisabled) return;
   await runWeeklyKpiSubmissionCron({
     calculationMode: "Ratio",
     lockId: "send_kpi_weekly_email_ratio_job",

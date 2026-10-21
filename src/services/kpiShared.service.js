@@ -86,6 +86,34 @@ const applyToleranceToTargetValue = (targetValue, toleranceDelta, toleranceType)
   return targetValue + toleranceDelta;
 };
 
+// Allocations saved with a missing limit (e.g. low_limit = 0 / high_limit =
+// NULL from the baseline import) were judged against a single bound: on /form
+// a "down" KPI then demanded a corrective action for any value above 0, and on
+// save an on-target value could be stored as "Needs attention". Each missing
+// limit is derived from the target and the KPI tolerance (the target itself
+// when the KPI has none), so every allocation is judged on a full band.
+const resolveAllocationLimits = ({ lowLimit, highLimit, target, toleranceType, lowTolerance, upTolerance }) => {
+  const targetValue = parseMetricNumber(target);
+  if (targetValue === null) return { lowLimit, highLimit };
+
+  return {
+    lowLimit: parseMetricNumber(lowLimit) !== null
+      ? lowLimit
+      : applyToleranceToTargetValue(
+        targetValue,
+        parseToleranceDeltaValue(lowTolerance, toleranceType, "low"),
+        toleranceType
+      ),
+    highLimit: parseMetricNumber(highLimit) !== null
+      ? highLimit
+      : applyToleranceToTargetValue(
+        targetValue,
+        parseToleranceDeltaValue(upTolerance, toleranceType, "up"),
+        toleranceType
+      )
+  };
+};
+
 const normalizeKpiDirection = (value) => {
   const text = String(value ?? '').trim().toLowerCase();
   if (!text) return null;
@@ -933,6 +961,7 @@ module.exports = {
   isRelativeToleranceTypeValue,
   parseToleranceDeltaValue,
   applyToleranceToTargetValue,
+  resolveAllocationLimits,
   normalizeKpiDirection,
   getKpiBounds,
   getReadableThresholdLineValues,

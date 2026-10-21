@@ -1196,7 +1196,8 @@ const registerAIGeneratedKpiRoutes = (
       console.error("[Industrial KPI Generator] Schema setup failed:", error.message);
     });
 
-  const cronEnabled = HARD_CODED_CRON_ENABLED;
+  const cronEnabled =
+    HARD_CODED_CRON_ENABLED && String(process.env.DISABLE_CRON_JOBS || "").trim().toLowerCase() !== "true";
   const cronExpression = HARD_CODED_CRON_EXPRESSION;
   const cronTimezone = HARD_CODED_CRON_TIMEZONE;
   const runOnStartup = HARD_CODED_CRON_RUN_ON_STARTUP;

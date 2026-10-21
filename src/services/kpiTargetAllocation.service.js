@@ -255,7 +255,11 @@ const prepareKpiObjectPayload = (payload = {}) => {
   };
 };
 
-const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsibleId = null } = {}) => {
+const loadKpiTargetAllocationRowsForUi = async ({
+  allocationId = null,
+  responsibleId = null,
+  excludeEndedInactive = false
+} = {}) => {
   const subjectHierarchy = await loadSubjectHierarchyData();
   const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
   const result = await pool.query(
@@ -366,9 +370,16 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
         OR a.set_by_people_id = $2
         OR a.created_by_people_id = $2
       )
+      AND (
+        $3::boolean IS NOT TRUE
+        OR NOT (
+          LOWER(TRIM(COALESCE(a.target_status, ''))) = 'inactive'
+          AND a.target_end_date IS NOT NULL
+        )
+      )
     ORDER BY a.created_at DESC, a.kpi_target_allocation_id DESC
     `,
-    [allocationId, normalizedResponsibleId]
+    [allocationId, normalizedResponsibleId, excludeEndedInactive]
   );
 
   return result.rows.map((row) => {
@@ -698,6 +709,11 @@ const getKpiTargetAllocationFamilyIds = async (allocationId) => {
   return familyIds.length ? familyIds : [normalizedAllocationId];
 };
 
+// Allocations deactivated with an end date are hidden from Consult Target Allocation.
+const isEndedInactiveKpiTargetAllocation = (row) =>
+  String(row?.target_status || "").trim().toLowerCase() === "inactive" &&
+  Boolean(row?.target_end_date);
+
 const loadKpiTargetAllocationGroupRowsForUi = async (allocationId) => {
   const groupIds = await getKpiTargetAllocationGroupIds(allocationId);
   if (!groupIds.length) return [];
@@ -757,6 +773,7 @@ module.exports = {
   ensureKpiObjectSchema,
   prepareKpiObjectPayload,
   loadKpiTargetAllocationRowsForUi,
+  isEndedInactiveKpiTargetAllocation,
   buildPreparedKpiObjectRows,
   getKpiObjectInsertValues,
   getKpiTargetAllocationScopeKey,

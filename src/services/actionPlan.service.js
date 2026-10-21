@@ -11,6 +11,7 @@ const {
   escapeHtml,
   sortCorrectiveActions,
   getLatestCorrectiveAction,
+  resolveAllocationLimits,
 } = require("./kpiShared.service");
 const {
   formatIsoDateValue,
@@ -643,6 +644,9 @@ const getResponsibleWithKPIs = async (responsibleId, week, filters = {}) => {
 ) latest_limits ON TRUE
     WHERE $2::integer IS NOT NULL
       AND kta.set_by_people_id = $2
+      AND COALESCE(kta.is_active, true) = true
+      AND COALESCE(k.is_active, true) = true
+      AND COALESCE(LOWER(TRIM(kta.target_status)), '') <> 'inactive'
   AND (
   $5::integer IS NULL
   OR COALESCE(kta.unit_id, kta.plant_id) = $5
@@ -703,9 +707,19 @@ const getResponsibleWithKPIs = async (responsibleId, week, filters = {}) => {
 
     const correctiveActions = sortCorrectiveActions(openActions);
     const latestCorrectiveAction = getLatestCorrectiveAction(correctiveActions);
+    const { lowLimit, highLimit } = resolveAllocationLimits({
+      lowLimit: kpi.low_limit,
+      highLimit: kpi.high_limit,
+      target: kpi.target,
+      toleranceType: kpi.tolerance_type,
+      lowTolerance: kpi.low_tolerance,
+      upTolerance: kpi.up_tolerance
+    });
 
     return {
       ...kpi,
+      low_limit: lowLimit,
+      high_limit: highLimit,
       corrective_actions: correctiveActions,
       current_week_corrective_actions: sortCorrectiveActions(currentWeekActions),
       corrective_action_count: correctiveActions.length,
@@ -1399,6 +1413,7 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
           kpi_target_allocation_id = $16,
           period_label = $17,
           type = 'action',
+          created_by_application = COALESCE(created_by_application, 'KPI Form'),
           updated_at = NOW(),
           closed_date = CASE
             WHEN LOWER($4::text) = 'closed' THEN COALESCE(closed_date, CURRENT_DATE)
@@ -1440,7 +1455,8 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
       unit_id,
       kpi_target_allocation_id,
       period_label,
-      closed_date
+      closed_date,
+      created_by_application
     )
       VALUES (
         $1,
@@ -1464,7 +1480,8 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
         CASE
           WHEN LOWER($4::text) = 'closed' THEN CURRENT_DATE
           ELSE NULL
-        END
+        END,
+        'KPI Form'
       )
       RETURNING id
       `,

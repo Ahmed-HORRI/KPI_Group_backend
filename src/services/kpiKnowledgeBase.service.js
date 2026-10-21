@@ -938,6 +938,48 @@ function startKpiKnowledgeRefreshWorker() {
   }
 }
 
+const ensureKpiKnowledgeRefreshTrigger = async (tableName, triggerName, events) => {
+  const existing = await pool.query(
+    `
+    SELECT 1
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = $1
+      AND t.tgname = $2
+      AND NOT t.tgisinternal
+    LIMIT 1
+    `,
+    [tableName, triggerName]
+  );
+
+  if (existing.rows.length) return;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Give up quickly instead of making every other query on the table wait behind this DDL.
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    await client.query(`
+      CREATE TRIGGER ${triggerName}
+      AFTER ${events} ON public.${tableName}
+      FOR EACH ROW
+      EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change()
+    `);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (error.code === "55P03" || error.code === "42710") {
+      console.warn(`[KPI Knowledge] Skipped creating ${triggerName}: ${error.message}`);
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const ensureKpiRatioSchema = async () => {
   if (!kpiRatioSchemaPromise) {
     kpiRatioSchemaPromise = (async () => {
@@ -1326,117 +1368,26 @@ const ensureKpiRatioSchema = async () => {
         $$;
       `);
 
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_kpi ON public.kpi;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_kpi
-        AFTER INSERT OR UPDATE ON public.kpi
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_subject_kpi ON public.subject_kpi;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_subject_kpi
-        AFTER INSERT OR UPDATE OR DELETE ON public.subject_kpi
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_subject ON public.subject;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_subject
-        AFTER INSERT OR UPDATE OR DELETE ON public.subject
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_kpi_target_allocation ON public.kpi_target_allocation;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_kpi_target_allocation
-        AFTER INSERT OR UPDATE OR DELETE ON public.kpi_target_allocation
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_kpi_result ON public.kpi_result;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_kpi_result
-        AFTER INSERT OR UPDATE OR DELETE ON public.kpi_result
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_role ON public.role;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_role
-        AFTER INSERT OR UPDATE OR DELETE ON public.role
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_people ON public.people;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_people
-        AFTER INSERT OR UPDATE OR DELETE ON public.people
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_unit ON public.unit;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_unit
-        AFTER INSERT OR UPDATE OR DELETE ON public.unit
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_zone ON public.zone;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_zone
-        AFTER INSERT OR UPDATE OR DELETE ON public.zone
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_unit_type ON public.unit_type;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_unit_type
-        AFTER INSERT OR UPDATE OR DELETE ON public.unit_type
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_product ON public.product;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_product
-        AFTER INSERT OR UPDATE OR DELETE ON public.product
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_product_line ON public.product_line;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_product_line
-        AFTER INSERT OR UPDATE OR DELETE ON public.product_line
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_market ON public.market;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_market
-        AFTER INSERT OR UPDATE OR DELETE ON public.market
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_customer ON public.customer;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_customer
-        AFTER INSERT OR UPDATE OR DELETE ON public.customer
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
+      // Create each trigger only when missing: re-creating needs an exclusive table lock on every startup,
+      // which queues all reads of that table behind any long-running query.
+      for (const [tableName, triggerName, events] of [
+        ["kpi", "trg_kpi_knowledge_refresh_on_kpi", "INSERT OR UPDATE"],
+        ["subject_kpi", "trg_kpi_knowledge_refresh_on_subject_kpi", "INSERT OR UPDATE OR DELETE"],
+        ["subject", "trg_kpi_knowledge_refresh_on_subject", "INSERT OR UPDATE OR DELETE"],
+        ["kpi_target_allocation", "trg_kpi_knowledge_refresh_on_kpi_target_allocation", "INSERT OR UPDATE OR DELETE"],
+        ["kpi_result", "trg_kpi_knowledge_refresh_on_kpi_result", "INSERT OR UPDATE OR DELETE"],
+        ["role", "trg_kpi_knowledge_refresh_on_role", "INSERT OR UPDATE OR DELETE"],
+        ["people", "trg_kpi_knowledge_refresh_on_people", "INSERT OR UPDATE OR DELETE"],
+        ["unit", "trg_kpi_knowledge_refresh_on_unit", "INSERT OR UPDATE OR DELETE"],
+        ["zone", "trg_kpi_knowledge_refresh_on_zone", "INSERT OR UPDATE OR DELETE"],
+        ["unit_type", "trg_kpi_knowledge_refresh_on_unit_type", "INSERT OR UPDATE OR DELETE"],
+        ["product", "trg_kpi_knowledge_refresh_on_product", "INSERT OR UPDATE OR DELETE"],
+        ["product_line", "trg_kpi_knowledge_refresh_on_product_line", "INSERT OR UPDATE OR DELETE"],
+        ["market", "trg_kpi_knowledge_refresh_on_market", "INSERT OR UPDATE OR DELETE"],
+        ["customer", "trg_kpi_knowledge_refresh_on_customer", "INSERT OR UPDATE OR DELETE"]
+      ]) {
+        await ensureKpiKnowledgeRefreshTrigger(tableName, triggerName, events);
+      }
 
       await pool.query(`
         DO $$

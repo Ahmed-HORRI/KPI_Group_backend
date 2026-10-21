@@ -7,8 +7,11 @@ const {
   normalizeOptionalNumericInput,
 } = require("../utils/normalize");
 const { createHttpError } = require("../utils/httpError");
+const { filterActiveSubjectTree } = require("../utils/subjectHierarchy");
+const { createKpiAnalyticsScope } = require("../services/kpiAnalyticsScope.service");
 const {
   loadKpiRowsForUi,
+  loadSubjectHierarchyData,
   getPeopleDisplayName,
   prepareKpiWritePayload,
   resolveSubjectIdForKpiPayload,
@@ -28,6 +31,7 @@ const {
   deriveKpiResultPeriodType,
   resolveRecordedByPeopleId,
   getDashboardSubmissionStatus,
+  resolveAllocationLimits,
   normalizeText,
   normalizeCorrectiveActionEstimatedDurationDays,
   normalizeCorrectiveActionImportance,
@@ -79,6 +83,7 @@ const {
   enrichIndividualAllocationScope,
   ensureKpiObjectSchema,
   loadKpiTargetAllocationRowsForUi,
+  isEndedInactiveKpiTargetAllocation,
   buildPreparedKpiObjectRows,
   getKpiObjectInsertValues,
   getKpiTargetAllocationScopeKey,
@@ -944,8 +949,10 @@ router.get("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
     if (!loadAllScope && !responsiblePeopleId) {
       throw createHttpError(400, "Responsible owner is invalid.");
     }
+    // Consult Target Allocation list: hide allocations that were deactivated with an end date.
     const rows = await loadKpiTargetAllocationRowsForUi({
-      responsibleId: loadAllScope ? null : responsiblePeopleId
+      responsibleId: loadAllScope ? null : responsiblePeopleId,
+      excludeEndedInactive: true
     });
     res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.set("Pragma", "no-cache");
@@ -978,7 +985,31 @@ router.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
-    const relatedAllocations = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
+    const groupAllocations = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
+    const isHiddenGroupAllocation = (row) =>
+      Number(row.kpi_target_allocation_id) !== Number(kpiObjectId) &&
+      isEndedInactiveKpiTargetAllocation(row);
+    const relatedAllocations = groupAllocations.filter((row) => !isHiddenGroupAllocation(row));
+    // Plants where this KPI (same type, unit type and role, any product line) still has a live target:
+    // the edit form lists another plant only when it has one.
+    const liveUnitsResult = await pool.query(
+      `
+      SELECT DISTINCT COALESCE(a.plant_id, a.unit_id) AS unit_id
+      FROM public.kpi_target_allocation a
+      JOIN public.kpi_target_allocation anchor
+        ON anchor.kpi_target_allocation_id = $1
+      WHERE a.kpi_id = anchor.kpi_id
+        AND COALESCE(a.kpi_type, '') = COALESCE(anchor.kpi_type, '')
+        AND COALESCE(a.unit_type_id, 0) = COALESCE(anchor.unit_type_id, 0)
+        AND COALESCE(a.role_id, 0) = COALESCE(anchor.role_id, 0)
+        AND COALESCE(a.plant_id, a.unit_id) IS NOT NULL
+        AND NOT (
+          LOWER(TRIM(COALESCE(a.target_status, ''))) = 'inactive'
+          AND a.target_end_date IS NOT NULL
+        )
+      `,
+      [Number(kpiObjectId)]
+    );
     const primaryRow =
       relatedAllocations.find(
         (row) => Number(row.kpi_target_allocation_id) === Number(kpiObjectId)
@@ -989,7 +1020,8 @@ router.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
     res.set("Expires", "0");
     res.json({
       ...(primaryRow || anchorRows[0]),
-      related_allocations: relatedAllocations.length ? relatedAllocations : anchorRows
+      related_allocations: relatedAllocations.length ? relatedAllocations : anchorRows,
+      live_unit_ids: liveUnitsResult.rows.map((row) => String(row.unit_id))
     });
   } catch (error) {
     console.error("GET one KPI object error:", error);
@@ -1051,6 +1083,20 @@ router.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
       set_by_people_id: req.body.set_by_people_id || preservedSetByPeopleId,
       created_by_people_id: req.body.created_by_people_id || preservedCreatedByPeopleId
     }, normalizedResponsiblePeopleId, preservedCreatedByPeopleId);
+
+    // A repeated allocation id would overwrite its owner and leave its siblings unmatched for the prune below.
+    const requestedAllocationIds = new Set();
+    for (const preparedRow of preparedRows) {
+      const requestedAllocationId = normalizeOptionalIntegerInput(preparedRow.kpi_target_allocation_id);
+      if (!requestedAllocationId) continue;
+      if (requestedAllocationIds.has(requestedAllocationId)) {
+        throw createHttpError(
+          400,
+          "The same KPI target allocation was sent twice. Reload the page and try again."
+        );
+      }
+      requestedAllocationIds.add(requestedAllocationId);
+    }
 
     client = await pool.connect();
     await client.query("BEGIN");
@@ -1257,6 +1303,11 @@ router.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
     for (const existingRow of rowsToPrune) {
       const existingAllocationId = normalizeOptionalIntegerInput(existingRow?.kpi_target_allocation_id);
       if (!existingAllocationId || matchedExistingAllocationIds.has(existingAllocationId)) {
+        continue;
+      }
+
+      // Hidden from the edit form, so its absence from the payload is not a removal.
+      if (isEndedInactiveKpiTargetAllocation(existingRow)) {
         continue;
       }
 
@@ -1688,6 +1739,16 @@ router.post("/api/responsibles/:responsibleId/kpi-results", async (req, res) => 
       if (!allocationRes.rows.length) continue;
 
       const allocation = allocationRes.rows[0];
+      const resolvedLimits = resolveAllocationLimits({
+        lowLimit: allocation.low_limit,
+        highLimit: allocation.high_limit,
+        target: allocation.effective_target_value,
+        toleranceType: allocation.tolerance_type,
+        lowTolerance: allocation.low_tolerance,
+        upTolerance: allocation.up_tolerance
+      });
+      allocation.low_limit = resolvedLimits.lowLimit;
+      allocation.high_limit = resolvedLimits.highLimit;
       const kpiId = allocation.kpi_id;
       const submissionStatusInfo = getDashboardSubmissionStatus({
         value: numericValue,
@@ -2183,6 +2244,11 @@ router.get("/api/responsibles/:responsibleId/kpi-value-history", async (req, res
 //     original could emit a <select> with no matching <option>, which makes a
 //     browser silently display the first option instead of the real period).
 // ---------------------------------------------------------------------------
+// Temporary: corrective actions are optional on /form until the target allocation limits are fixed.
+// Set KPI_FORM_REQUIRE_CORRECTIVE_ACTION=true in the environment to make them mandatory again.
+const KPI_FORM_REQUIRE_CORRECTIVE_ACTION =
+  String(process.env.KPI_FORM_REQUIRE_CORRECTIVE_ACTION || "").trim().toLowerCase() === "true";
+
 const getKpiFormDisplayUnit = (kpi = {}) => {
   const unit = String(kpi.unit || "").trim();
   if (unit.toLowerCase() !== "kcur") return unit;
@@ -2403,6 +2469,7 @@ router.get("/api/responsibles/:responsibleId/kpi-form", async (req, res) => {
       unit_id: requestedUnitId,
       return_url: formReturnUrl,
       corrective_actions_enabled: Boolean(correctiveActionsEnabled),
+      corrective_actions_required: KPI_FORM_REQUIRE_CORRECTIVE_ACTION,
       responsible_options: responsibleOptions,
       default_responsible: defaultResponsible,
       has_initial_invalid_kpi: false,
@@ -2513,7 +2580,7 @@ router.get("/api/responsibles/:responsibleId/kpi-form", async (req, res) => {
           String(action.responsible || "").trim()
       );
 
-      if (correctiveActionsEnabled && initialNeedsCA && !hasValidCA) {
+      if (KPI_FORM_REQUIRE_CORRECTIVE_ACTION && correctiveActionsEnabled && initialNeedsCA && !hasValidCA) {
         hasInitialInvalidKpi = true;
       }
 
@@ -2612,10 +2679,8 @@ router.get("/api/responsibles/:responsibleId/kpi-form", async (req, res) => {
 // database via information_schema -- unlike the legacy public."Responsible" /
 // public."Kpi" tables other parts of this page's domain still reference.
 //
-// The subject hierarchy is intentionally NOT returned: the original's Excel-style
-// subject tree picker is simplified to a plain text field in the React page (same
-// approach already used in KpiAdminPage.jsx), and POST/PUT /api/kpis resolve a
-// subject by name or full path server-side via resolveSubjectIdForKpiPayload.
+// Return the same active subject hierarchy as the original Excel-style picker.
+// The selected node ID is submitted alongside its full path when saving a KPI.
 // ---------------------------------------------------------------------------
 router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res) => {
   try {
@@ -2639,7 +2704,9 @@ router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res
       multisiteAssignmentsResult,
       peopleRoleAssignmentsResult,
       roleScopeAssignmentsResult,
-      productLineAssignmentsResult
+      productLineAssignmentsResult,
+      subjectHierarchy,
+      endedInactiveAllocationsResult
     ] = await Promise.all([
       pool.query(`
         SELECT role_id, role_name
@@ -2863,6 +2930,20 @@ router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res
           p.name,
           p.first_name,
           pra.people_id
+      `),
+      loadSubjectHierarchyData(),
+
+      // Targets deactivated with an end date: the unit + person is not listed again for that KPI.
+      pool.query(`
+        SELECT DISTINCT
+          kpi_id,
+          COALESCE(plant_id, unit_id) AS unit_id,
+          set_by_people_id
+        FROM public.kpi_target_allocation
+        WHERE LOWER(TRIM(COALESCE(target_status, ''))) = 'inactive'
+          AND target_end_date IS NOT NULL
+          AND COALESCE(plant_id, unit_id) IS NOT NULL
+          AND set_by_people_id IS NOT NULL
       `)
     ]);
 
@@ -3117,6 +3198,12 @@ router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res
         selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
         operating_currency: normalizeOptionalTextInput(row.operating_currency) || "",
         label: getPeopleDisplayName(row) || (row.people_id ? `Person ${row.people_id}` : "")
+      })),
+
+      endedInactiveAllocations: endedInactiveAllocationsResult.rows.map((row) => ({
+        kpi_id: String(row.kpi_id),
+        unit_id: String(row.unit_id),
+        people_id: String(row.set_by_people_id)
       }))
     };
 
@@ -3129,6 +3216,7 @@ router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res
         role_name: responsibleContext?.role_name || ""
       },
       role_options: roleOptions,
+      subject_hierarchy: filterActiveSubjectTree(subjectHierarchy.tree),
       allocation_lookups: allocationLookups
     });
   } catch (err) {
@@ -3159,7 +3247,27 @@ router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res
 // source used everywhere else in this codebase: kpi_result joined to
 // kpi_target_allocation (scoped by kta.set_by_people_id, the same scope as
 // GET /api/responsibles/:id/dashboard) and public.kpi.
+//
+// Without parameters it returns the dashboard owner's KPIs, as before. CEO, VP,
+// plant / zone managers and administrators can also ask for other responsibles
+// of their scope (services/kpiAnalyticsScope.service.js):
+// ?responsible=<people_id>|all&unit_id=<unit_id>. Each series then carries its
+// responsible and their unit.
 // ---------------------------------------------------------------------------
+const kpiAnalyticsScope = createKpiAnalyticsScope({ db: pool });
+
+// Units and responsibles the signed-in user can pick in "My KPI Analytics".
+router.get("/api/responsibles/:responsibleId/kpi-analytics-filters", async (req, res) => {
+  try {
+    res.json(await kpiAnalyticsScope.getFilters(req.auth?.user));
+  } catch (err) {
+    console.error("GET /api/responsibles/:responsibleId/kpi-analytics-filters error:", err.message);
+    res.status(err.statusCode || 500).json({
+      error: err.statusCode ? err.message : "Failed to load the KPI analytics filters."
+    });
+  }
+});
+
 router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, res) => {
   try {
     const responsibleId = normalizeOptionalIntegerInput(req.params.responsibleId);
@@ -3176,10 +3284,18 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
       throw createHttpError(404, "Responsible not found");
     }
 
+    const peopleIds = await kpiAnalyticsScope.resolveSelection(req.auth?.user, {
+      ownerId: responsiblePeopleId,
+      responsible: req.query.responsible,
+      unitId: req.query.unit_id
+    });
+    if (!peopleIds.length) return res.json([]);
+
     const result = await pool.query(
       `
       WITH ranked AS (
         SELECT
+          kta.set_by_people_id AS responsible_id,
           kr.kpi_id,
           DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)) AS month_start,
           TO_CHAR(
@@ -3195,6 +3311,7 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
           COALESCE(k.kpi_sub_title, k.kpi_name, '') AS indicator_sub_title,
           ROW_NUMBER() OVER (
             PARTITION BY
+              kta.set_by_people_id,
               kr.kpi_id,
               DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at))
             ORDER BY COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC,
@@ -3205,10 +3322,13 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
           ON kta.kpi_target_allocation_id = kr.kpi_target_allocation_id
         JOIN public.kpi k
           ON k.kpi_id = kr.kpi_id
-        WHERE kta.set_by_people_id = $1
+        WHERE kta.set_by_people_id = ANY($1::int[])
           AND kr.raw_value IS NOT NULL
       )
       SELECT
+        ranked.responsible_id,
+        TRIM(CONCAT_WS(' ', p.first_name, p.name)) AS responsible_name,
+        wu.unit_name,
         kpi_id,
         indicator_title,
         indicator_sub_title,
@@ -3220,17 +3340,24 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
         month_label,
         value_num
       FROM ranked
+      LEFT JOIN public.people p ON p.people_id = ranked.responsible_id
+      LEFT JOIN public.unit wu ON wu.unit_id = p.work_at_unit_id
       WHERE rn = 1
-      ORDER BY kpi_id, month_start
+      ORDER BY wu.unit_name, p.name, p.first_name, ranked.responsible_id, kpi_id, month_start
       `,
-      [responsiblePeopleId]
+      [peopleIds]
     );
 
-    const grouped = {};
+    // One series per responsible and KPI (a KPI can be allocated to several).
+    const grouped = new Map();
 
     for (const row of result.rows) {
-      if (!grouped[row.kpi_id]) {
-        grouped[row.kpi_id] = {
+      const key = `${row.responsible_id}:${row.kpi_id}`;
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          responsible_id: row.responsible_id,
+          responsible_name: row.responsible_name || "",
+          unit_name: row.unit_name || "",
           kpi_id: row.kpi_id,
           indicator_title: row.indicator_title,
           indicator_sub_title: row.indicator_sub_title,
@@ -3241,14 +3368,14 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
           highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
           lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null,
           targetDirection: row.target_direction || "Up"
-        };
+        });
       }
 
-      grouped[row.kpi_id].labels.push(row.month_label);
-      grouped[row.kpi_id].values.push(Number(row.value_num) || 0);
+      grouped.get(key).labels.push(row.month_label);
+      grouped.get(key).values.push(Number(row.value_num) || 0);
     }
 
-    res.json(Object.values(grouped));
+    res.json([...grouped.values()]);
   } catch (err) {
     console.error(
       "GET /api/responsibles/:responsibleId/kpi-monthly-series error:",

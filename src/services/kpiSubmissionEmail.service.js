@@ -294,6 +294,9 @@ const loadKpiSubmissionEmailRecipients = async (calculationMode = null) => {
     WHERE owner.people_id IS NOT NULL
       AND kta.set_by_people_id IS NOT NULL
       AND COALESCE(TRIM(owner.email), '') <> ''
+      AND COALESCE(kta.is_active, true) = true
+      AND COALESCE(k.is_active, true) = true
+      AND COALESCE(LOWER(TRIM(kta.target_status)), '') <> 'inactive'
       AND (
         $1::text IS NULL
         OR LOWER(COALESCE(NULLIF(TRIM(k.calculation_mode), ''), 'direct')) = $1

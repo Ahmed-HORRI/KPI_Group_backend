@@ -6,6 +6,8 @@ const sharedPostgresConfig = {
   password: process.env.PG_PASSWORD,
   port: Number(process.env.PG_PORT) || 5432,
   ssl: { rejectUnauthorized: false },
+  // Fail a query stuck behind a table lock instead of hanging the request forever.
+  options: "-c lock_timeout=30000",
 };
 
 const pool = new Pool({
