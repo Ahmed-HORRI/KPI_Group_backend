@@ -1,5 +1,5 @@
 // Traceability of KPI and target allocation changes (administration, tab
-// "KPI changes"): what was created, updated or deleted, when, and by whom.
+// "KPI audit trail"): what was created, updated or deleted, when, and by whom.
 //
 // Each route that writes public.kpi or public.kpi_target_allocation takes a
 // snapshot of the rows it touches right after BEGIN and again just before

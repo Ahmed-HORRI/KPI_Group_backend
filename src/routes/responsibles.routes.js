@@ -12,7 +12,7 @@ const { createKpiAnalyticsScope } = require("../services/kpiAnalyticsScope.servi
 const { actorFromRequest, createKpiChangeLog } = require("../services/kpiChangeLog.service");
 
 // Trace of every KPI / target allocation created, updated or deleted here
-// (administration, tab "KPI changes"), written in the same transaction.
+// (administration, tab "KPI audit trail"), written in the same transaction.
 const kpiChangeLog = createKpiChangeLog({ db: pool });
 const {
   loadKpiRowsForUi,

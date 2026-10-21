@@ -9,7 +9,7 @@ const { createKpiChangeLog } = require("./services/kpiChangeLog.service");
 // (middlewares/auth.middleware.js) are checked whatever router defines them.
 const installAuth = (app, { db, sendMail, config, now, logger = console }) => {
   const authService = createAuthService({ db, sendMail, config, now, logger });
-  // Read by the administration ("KPI changes" tab); written by the KPI routes.
+  // Read by the administration ("KPI audit trail" tab); written by the KPI routes.
   const kpiChangeLog = createKpiChangeLog({ db });
   const { attachSession, verifyOrigin, requireAuthentication, requireAdmin } = createAuthMiddleware({
     authService,
