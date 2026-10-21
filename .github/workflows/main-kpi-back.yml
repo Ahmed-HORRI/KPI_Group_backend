@@ -3,6 +3,9 @@
 # PostgreSQL (pg-mem) and a fake mailer: no database, no secret, no e-mail.
 # Nothing is deployed here (production still deploys from the KPI-Group repo).
 name: main-kpi-back
+# Run title: the commit message for a push (GitHub's default when this is
+# empty); "Manual run on <branch>" for a run started with "Run workflow".
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Manual run on {0}', github.ref_name) || '' }}"
 
 on:
   push:
