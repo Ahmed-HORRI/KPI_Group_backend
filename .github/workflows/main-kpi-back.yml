@@ -1,0 +1,42 @@
+# CI: on every push and pull request to main, installs the exact dependencies
+# (package-lock.json) and runs the test suite. The tests use an in-memory
+# PostgreSQL (pg-mem) and a fake mailer: no database, no secret, no e-mail.
+# Nothing is deployed here (production still deploys from the KPI-Group repo).
+name: main-kpi-back
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The KPI reminder / report crons must never run here, even if a module
+      # that registers them gets loaded.
+      DISABLE_CRON_JOBS: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the tests
+        run: npm test
