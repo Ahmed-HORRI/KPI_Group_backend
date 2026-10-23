@@ -7,7 +7,9 @@ const { createKpiChangeLog } = require("./services/kpiChangeLog.service");
 // Mounts authentication on the app. Must run before any other route is
 // registered, so the routes listed in PROTECTED_ROUTES
 // (middlewares/auth.middleware.js) are checked whatever router defines them.
-const installAuth = (app, { db, sendMail, config, now, logger = console }) => {
+// kpiIntake (optional): the KPI & Target Intake service, whose review and
+// submit routes are administration routes.
+const installAuth = (app, { db, sendMail, config, now, logger = console, kpiIntake = null }) => {
   const authService = createAuthService({ db, sendMail, config, now, logger });
   // Read by the administration ("KPI audit trail" tab); written by the KPI routes.
   const kpiChangeLog = createKpiChangeLog({ db });
@@ -21,7 +23,7 @@ const installAuth = (app, { db, sendMail, config, now, logger = console }) => {
   app.use(verifyOrigin);
   app.use(createAuthRouter({ authService, config }));
   app.use(requireAuthentication);
-  app.use(createAdminRouter({ authService, requireAdmin, kpiChangeLog }));
+  app.use(createAdminRouter({ authService, requireAdmin, kpiChangeLog, kpiIntake }));
 
   return { authService, kpiChangeLog };
 };

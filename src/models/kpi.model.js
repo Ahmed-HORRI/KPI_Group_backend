@@ -651,6 +651,71 @@ const resolveSubjectIdForKpiPayload = async (payload = {}) => {
   return null;
 };
 
+// Columns written when a KPI is created, in this order, from a
+// prepareKpiWritePayload() result (created_by_people_id comes apart).
+const KPI_INSERT_COLUMNS = Object.freeze([
+  "kpi_name",
+  "kpi_sub_title",
+  "kpi_code",
+  "kpi_formula",
+  "unit",
+  "kpi_explanation",
+  "frequency",
+  "target_value",
+  "target_direction",
+  "tolerance_type",
+  "up_tolerance",
+  "low_tolerance",
+  "max_value",
+  "min_value",
+  "min_type",
+  "max_type",
+  "nombre_periode",
+  "calculation_on",
+  "calculation_mode",
+  "reference_kpi_id",
+  "target_auto_adjustment",
+  "reactivity_status",
+  "importance",
+  "pricing_type",
+  "reactivity_need",
+  "display_trend",
+  "regression",
+  "owner_role_id",
+  "status",
+  "comments",
+  "high_limit",
+  "low_limit",
+  "created_by_people_id",
+  "kfs"
+]);
+
+// Optional columns some callers also set (KPI & Target Intake page).
+const KPI_INSERT_EXTRA_COLUMNS = Object.freeze(["currency_type", "type"]);
+
+// Creates a KPI (POST /api/kpis, KPI & Target Intake page); returns the new row.
+const insertKpiRow = async (client, payload, { createdByPeopleId = null, extraColumns = {} } = {}) => {
+  const columns = [...KPI_INSERT_COLUMNS];
+  const values = KPI_INSERT_COLUMNS.map((column) =>
+    column === "created_by_people_id" ? createdByPeopleId : payload[column]
+  );
+  for (const column of KPI_INSERT_EXTRA_COLUMNS) {
+    if (extraColumns[column] === undefined) continue;
+    columns.push(column);
+    values.push(extraColumns[column]);
+  }
+
+  const result = await client.query(
+    `
+    INSERT INTO public.kpi (${columns.join(", ")})
+    VALUES (${columns.map((_, index) => `$${index + 1}`).join(",")})
+    RETURNING *;
+    `,
+    values
+  );
+  return result.rows[0];
+};
+
 const upsertPrimarySubjectKpiLink = async (client, kpiId, subjectId) => {
   await client.query(
     `
@@ -850,6 +915,7 @@ module.exports = {
   loadSubjectHierarchyData,
   loadKpiRowsForUi,
   prepareKpiWritePayload,
+  insertKpiRow,
   resolveSubjectIdForKpiPayload,
   upsertPrimarySubjectKpiLink,
   deleteKpiDependentRecords,

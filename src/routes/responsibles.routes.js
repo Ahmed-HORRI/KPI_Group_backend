@@ -3301,7 +3301,8 @@ router.get("/api/responsibles/:responsibleId/dashboard-context", async (req, res
 // plant / zone managers and administrators can also ask for other responsibles
 // of their scope (services/kpiAnalyticsScope.service.js):
 // ?responsible=<people_id>|all&unit_id=<unit_id>. Each series then carries its
-// responsible and their unit.
+// responsible and their unit. Each series also carries the KPI's frequency, which
+// the page filters on client-side (the points stay one per calendar month).
 // ---------------------------------------------------------------------------
 const kpiAnalyticsScope = createKpiAnalyticsScope({ db: pool });
 
@@ -3356,6 +3357,7 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
           COALESCE(kr.upper_limit, k.high_limit) AS high_limit,
           COALESCE(kr.lower_limit, k.low_limit) AS low_limit,
           k.target_direction,
+          NULLIF(TRIM(k.frequency), '') AS frequency,
           COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS indicator_title,
           COALESCE(k.kpi_sub_title, k.kpi_name, '') AS indicator_sub_title,
           ROW_NUMBER() OVER (
@@ -3385,6 +3387,7 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
         low_limit,
         target,
         target_direction,
+        frequency,
         month_start,
         month_label,
         value_num
@@ -3416,7 +3419,9 @@ router.get("/api/responsibles/:responsibleId/kpi-monthly-series", async (req, re
             row.target !== null && row.target !== "" ? Number(row.target) : null,
           highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
           lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null,
-          targetDirection: row.target_direction || "Up"
+          targetDirection: row.target_direction || "Up",
+          // Weekly / Monthly / ... -- the analytics page filters on it.
+          frequency: row.frequency || ""
         });
       }
 

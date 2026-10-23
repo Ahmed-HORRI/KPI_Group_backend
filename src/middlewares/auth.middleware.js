@@ -1,8 +1,9 @@
 // Session handling for every request, plus the guard on the routes that need
 // a signed-in user.
 //
-// Only the Responsible KPI Dashboard (/responsible/:id/dashboard) and the user
-// administration require an account. A user only opens their own dashboard:
+// Only the Responsible KPI Dashboard (/responsible/:id/dashboard), the user
+// administration and the rows of the database shown on the KPI & Target Intake
+// page require an account. A user only opens their own dashboard:
 // :id must be the people_id of their account (administrators open any). Every other page -- in particular the
 // ones opened from e-mail links (/form, /dashboard, /kpi-training-center,
 // /kpi-target-adjustments/review...) -- stays open exactly as before, so the
@@ -22,6 +23,8 @@ const PROTECTED_ROUTES = [
   /^\/api\/responsibles\/[^/]+\/kpi-analytics-filters$/,
   /^\/api\/responsibles\/[^/]+\/kpi-graphs$/,
   /^\/api\/responsibles\/[^/]+\/kpi-history-monthly$/,
+  // KPI & Target Intake page: the rows already in the database (the rest of the page is public)
+  /^\/api\/kpi-intake\/records$/,
   // User administration
   /^\/api\/admin(\/|$)/
 ];

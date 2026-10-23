@@ -1,8 +1,9 @@
 const express = require("express");
 const { getRequestMeta } = require("../middlewares/auth.middleware");
+const { actorFromRequest } = require("../services/kpiChangeLog.service");
 
 // User administration: every route here requires an administrator session.
-const createAdminRouter = ({ authService, requireAdmin, kpiChangeLog }) => {
+const createAdminRouter = ({ authService, requireAdmin, kpiChangeLog, kpiIntake }) => {
   const router = express.Router();
 
   router.use("/api/admin", requireAdmin, (_req, res, next) => {
@@ -135,6 +136,36 @@ const createAdminRouter = ({ authService, requireAdmin, kpiChangeLog }) => {
       res.json({ people: await authService.searchPeople(req.query.search) });
     })
   );
+
+  // KPI & Target Intake page: what a submit would do, the submit itself (into
+  // public.kpi / public.kpi_target_allocation) and the rejection of lines.
+  if (kpiIntake) {
+    router.get(
+      "/api/admin/kpi-intake/preview",
+      handle("GET /api/admin/kpi-intake/preview", async (_req, res) => {
+        res.json(await kpiIntake.preview());
+      })
+    );
+
+    router.post(
+      "/api/admin/kpi-intake/submit",
+      handle("POST /api/admin/kpi-intake/submit", async (req, res) => {
+        res.json(await kpiIntake.submit({ intakeIds: req.body?.intake_ids }, actorFromRequest(req, "intake")));
+      })
+    );
+
+    router.post(
+      "/api/admin/kpi-intake/reject",
+      handle("POST /api/admin/kpi-intake/reject", async (req, res) => {
+        res.json(
+          await kpiIntake.reject(
+            { intakeIds: req.body?.intake_ids, comment: req.body?.comment },
+            actorFromRequest(req, "intake")
+          )
+        );
+      })
+    );
+  }
 
   return router;
 };

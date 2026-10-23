@@ -21,12 +21,18 @@ const monitoringRoutes = require("./routes/monitoring.routes");
 const ceoReportRoutes = require("./routes/ceoReport.routes");
 const miscRoutes = require("./routes/misc.routes");
 const targetAdjustmentsRoutes = require("./routes/targetAdjustments.routes");
-const { ensureKpiRatioSchema, refreshKpiKnowledgeBaseForKpiId } = require("./services/kpiKnowledgeBase.service");
+const {
+  ensureKpiRatioSchema,
+  refreshKpiKnowledgeBaseForKpiId,
+  refreshKpiKnowledgeBases
+} = require("./services/kpiKnowledgeBase.service");
 const { registerRecommendationRoutes } = require("./services/kpiRecommendations.service");
 const { registerAIGeneratedKpiRoutes } = require("./services/kpiDerivedGenerator.service");
 const { ensureKpiTrainingEscalationSchema } = require("./services/kpiTraining.service");
 const { loadAuthConfig } = require("./config/auth");
 const { installAuth } = require("./installAuth");
+const { createKpiIntakeService } = require("./services/kpiIntake.service");
+const { createKpiIntakeRouter } = require("./routes/kpiIntake.routes");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -48,9 +54,12 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "40mb" }));
 // the user administration (PROTECTED_ROUTES in middlewares/auth.middleware.js)
 // require a session whatever router defines them. Every other route stays public.
 let authTransporter = null;
+// KPI & Target Intake page: public lines, submitted by an administrator.
+const kpiIntake = createKpiIntakeService({ db: pool, refreshKnowledgeBases: refreshKpiKnowledgeBases });
 const { authService, kpiChangeLog } = installAuth(app, {
   db: pool,
   config: authConfig,
+  kpiIntake,
   sendMail: (message) => {
     if (!authTransporter) authTransporter = createTransporter();
     return authTransporter.sendMail(message);
@@ -67,6 +76,7 @@ app.use(monitoringRoutes);
 app.use(ceoReportRoutes);
 app.use(miscRoutes);
 app.use(targetAdjustmentsRoutes);
+app.use(createKpiIntakeRouter({ kpiIntake }));
 
 registerRecommendationRoutes(app, pool, createTransporter);
 registerAIGeneratedKpiRoutes(app, {
@@ -105,6 +115,15 @@ kpiChangeLog
   })
   .catch((error) => {
     console.error("[KPI change log] Schema setup failed:", error.message);
+  });
+
+kpiIntake
+  .ensureSchema()
+  .then(() => {
+    console.log("[KPI intake] Table is ready.");
+  })
+  .catch((error) => {
+    console.error("[KPI intake] Schema setup failed:", error.message);
   });
 
 ensureKpiTrainingEscalationSchema()

@@ -33,8 +33,9 @@ const CHANGE_LOG_SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS kpi_app_change_log_created_idx ON public.kpi_app_change_log (created_at)`
 ];
 
-// Where a change was made.
-const SOURCES = ["dashboard", "kpi_admin", "target_review"];
+// Where a change was made ("intake": lines of the KPI & Target Intake page
+// submitted by an administrator).
+const SOURCES = ["dashboard", "kpi_admin", "target_review", "intake"];
 
 // Columns never compared: timestamps, and the KPI knowledge base the app
 // regenerates on every save.

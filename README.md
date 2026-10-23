@@ -58,6 +58,26 @@ Variables d'environnement : voir `.env.example` (section Authentification).
 Derrière le proxy Azure, mettre `TRUST_PROXY=1` pour que la limitation par IP
 et le journal voient la vraie adresse du client.
 
+## Saisie des KPI et des target allocations (`/kpi-intake`)
+
+Page ouverte à toute personne qui a le lien : les responsables y saisissent de
+nouveaux KPI et de nouvelles target allocations dans deux tableaux (onglets
+« KPI » et « Target Allocation »), avec des noms au lieu des ids. Un
+administrateur relit les lignes puis les soumet dans `public.kpi` et
+`public.kpi_target_allocation`. Seules des créations sont possibles : aucune
+ligne existante n'est modifiée.
+
+| Sujet | Règle |
+|---|---|
+| Attente | Les lignes enregistrées sont stockées dans `kpi_app_intake_row` (créée au démarrage ; une seule table pour les deux onglets, valeurs en JSON). Rien n'est écrit dans `kpi` ni dans `kpi_target_allocation` avant le Submit. Statuts : `pending` (prête), `error`, `duplicate`, puis `submitted` (`created_record_id` = id créé) ou `rejected`. |
+| Colonnes | Définies une seule fois dans `services/kpiIntakeColumns.js` : la page construit ses tableaux à partir de cette liste, et le serveur vérifie chaque ligne selon cette même liste (type, obligatoire, obligatoire selon une autre colonne, longueur maximale de la colonne en base). Les ids, `created_at`, `updated_at`, `is_active`, la base de connaissance et le fichier ne sont pas saisis ; `created_by_people_id` = la personne du champ « Submitted by ». |
+| Noms → ids | `services/kpiIntakeResolver.service.js`. Un nom choisi dans la liste porte son id, vérifié à nouveau. Un nom tapé ou collé depuis Excel est comparé sans tenir compte de la casse, des accents, des espaces ni du type de tiret : d'abord avec le libellé complet, ensuite avec le nom seul. Aucune correspondance → « Unknown », plusieurs → « Ambiguous » avec les candidats ; jamais de choix silencieux. Les noms n'étant pas uniques (« Finance » existe dans chaque usine, homonymes chez les personnes et les clients), les libellés les distinguent : « Finance — Kunshan », « Prénom NOM — e-mail », « Client [code] — pays (#id) ». Plant = unité qui n'est pas un Department ; seuls les sujets finaux actifs, les rôles actifs et les clients non supprimés sont proposés. Les personnes et les clients sont cherchés côté serveur (2 lettres minimum, 20 résultats), jamais listés en entier. |
+| Règles existantes | Une ligne passe aussi par `prepareKpiWritePayload` / `prepareKpiObjectPayload`, comme le formulaire `/kpi-admin` et le dashboard. L'INSERT d'un KPI est partagé avec `POST /api/kpis` (`insertKpiRow`, `models/kpi.model.js`). |
+| Doublons | KPI : même nom + sous-titre qu'un KPI existant (actif ou non) ou qu'une ligne précédente. Allocation : même KPI et même périmètre (plant, zone, unit, unit type, role, set by, product, product line, market, customer, function) qu'une allocation active, non `Inactive`, ou qu'une ligne précédente, avec des périodes qui se chevauchent (une date absente = période ouverte). Un doublon n'est jamais inséré ni fusionné avec la ligne existante. |
+| Dépendances | Une allocation peut viser un KPI saisi dans l'onglet KPI avant qu'il n'existe ; elle attend que cette ligne soit prête, et le Submit insère les KPI avant les allocations. |
+| Écritures publiques | `GET /api/kpi-intake/lookups`, `/people`, `/customers`, `/lines`, `POST /api/kpi-intake/lines`, `DELETE /api/kpi-intake/lines/:id` : limitées par IP (600 lectures et 120 écritures par 15 min), 2 Mo et 200 lignes au maximum par enregistrement. Une ligne modifiée par quelqu'un d'autre entre-temps est refusée (409, `row_version`). |
+| Administrateur | `GET /api/admin/kpi-intake/preview` (aperçu, n'écrit rien), `POST /api/admin/kpi-intake/submit` (`intake_ids` optionnel), `POST /api/admin/kpi-intake/reject` (`intake_ids`, `comment`). Le Submit s'exécute en une seule transaction, sous un verrou consultatif : si une ligne échoue, rien n'est inséré. Les créations sont tracées dans `kpi_app_change_log` (source `intake`) et la base de connaissance des KPI est mise à jour. |
+
 ### Tests
 
 `npm test` lance les tests du parcours complet sur une base PostgreSQL en

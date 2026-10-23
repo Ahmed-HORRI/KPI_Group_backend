@@ -11,6 +11,7 @@ const {
   getKpiDisplayFileName,
   getKpiStoredFileName,
   prepareKpiWritePayload,
+  insertKpiRow,
   resolveSubjectIdForKpiPayload,
   upsertPrimarySubjectKpiLink,
   deleteKpiDependentRecords,
@@ -252,45 +253,8 @@ router.post("/api/kpis", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
-    const {
-      subject_id,
-      kpi_name,
-      kpi_sub_title,
-      kpi_code,
-      kpi_formula,
-      unit,
-      kpi_explanation,
-      frequency,
-      target_value,
-      target_direction,
-      tolerance_type,
-      up_tolerance,
-      low_tolerance,
-      max_value,
-      min_value,
-      min_type,
-      max_type,
-      nombre_periode,
-      calculation_on,
-      calculation_mode,
-      display_trend,
-      regression,
-      reference_kpi_id,
-      target_auto_adjustment,
-      reactivity_status,
-      importance,
-      pricing_type,
-      reactivity_need,
-      owner_role_id,
-      status,
-      comments,
-      high_limit,
-      low_limit,
-      kfs,
-      file_upload,
-      file_source_path,
-      file_source_name
-    } = prepareKpiWritePayload(req.body);
+    const kpiPayload = prepareKpiWritePayload(req.body);
+    const { subject_id, file_upload, file_source_path, file_source_name } = kpiPayload;
     const createdByPeopleId = normalizeOptionalIntegerInput(req.body.created_by_people_id);
     const resolvedSubjectId = await resolveSubjectIdForKpiPayload({
       subject_id,
@@ -304,88 +268,7 @@ router.post("/api/kpis", async (req, res) => {
     client = await pool.connect();
     await client.query("BEGIN");
 
-    const result = await client.query(
-      `
-      INSERT INTO public.kpi (
-        kpi_name,
-        kpi_sub_title,
-        kpi_code,
-        kpi_formula,
-        unit,
-        kpi_explanation,
-        frequency,
-        target_value,
-        target_direction,
-        tolerance_type,
-        up_tolerance,
-        low_tolerance,
-        max_value,
-        min_value,
-        min_type,
-        max_type,
-        nombre_periode,
-        calculation_on,
-        calculation_mode,
-        reference_kpi_id,
-        target_auto_adjustment,
-        reactivity_status,
-        importance,
-        pricing_type,
-        reactivity_need,
-        display_trend,
-        regression,
-        owner_role_id,
-        status,
-        comments,
-        high_limit,
-        low_limit,
-        created_by_people_id,
-        kfs
-      )
-      VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34
-      )
-      RETURNING *;
-      `,
-      [
-        kpi_name,
-        kpi_sub_title,
-        kpi_code,
-        kpi_formula,
-        unit,
-        kpi_explanation,
-        frequency,
-        target_value,
-        target_direction,
-        tolerance_type,
-        up_tolerance,
-        low_tolerance,
-        max_value,
-        min_value,
-        min_type,
-        max_type,
-        nombre_periode,
-        calculation_on,
-        calculation_mode,
-        reference_kpi_id,
-        target_auto_adjustment,
-        reactivity_status,
-        importance,
-        pricing_type,
-        reactivity_need,
-        display_trend,
-        regression,
-        owner_role_id,
-        status,
-        comments,
-        high_limit,
-        low_limit,
-        createdByPeopleId,
-        kfs
-      ]
-    );
-
-    const newKpi = result.rows[0];
+    const newKpi = await insertKpiRow(client, kpiPayload, { createdByPeopleId });
     const fileAttachment =
       file_upload
         ? await writeUploadedKpiFile(newKpi.kpi_id, file_upload)
