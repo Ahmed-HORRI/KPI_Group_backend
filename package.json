@@ -4,7 +4,8 @@
   "description": "",
   "main": "src/server.js",
   "scripts": {
-    "start": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
     "test": "node --test \"tests/**/*.test.js\"",
     "create-admin": "node scripts/create-admin.js"
   },
