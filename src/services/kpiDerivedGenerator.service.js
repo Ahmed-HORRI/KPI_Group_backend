@@ -1,5 +1,7 @@
 "use strict";
 
+const { BRAND, STATUS, FONT, BRAND_PAGE_CSS, renderPageHeader } = require("../config/brand");
+
 const PROMPT_VERSION = "industrial-derived-kpi-lite-v1";
 const DEFAULT_MODEL = process.env.OPENAI_DERIVED_KPI_MODEL || "gpt-4o-mini";
 const DEFAULT_LIMIT = 8;
@@ -312,30 +314,27 @@ const buildPageHtml = () => `<!DOCTYPE html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Industrial KPI Generator</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
+    ${BRAND_PAGE_CSS}
     * { box-sizing: border-box; }
+    /* Page palette mapped onto the AVOCarbon charter (src/config/brand.js). */
     :root {
-      --bg: #f3f7fc;
-      --surface: rgba(255,255,255,0.92);
-      --border: rgba(15,23,42,0.08);
-      --text: #0f172a;
-      --muted: #64748b;
-      --primary: #2563eb;
-      --accent: #0f766e;
-      --shadow: 0 18px 45px rgba(15,23,42,0.08);
-      --radius: 22px;
+      --bg: ${BRAND.page};
+      --surface: ${BRAND.white};
+      --border: ${BRAND.line};
+      --text: ${BRAND.ink};
+      --muted: ${BRAND.muted};
+      --primary: ${BRAND.blue};
+      --primary-dark: ${BRAND.blueDark};
+      --accent: ${BRAND.blueDark};
+      --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
+      --radius: 14px;
     }
     body {
       margin: 0;
-      font-family: "Inter", sans-serif;
+      font-family: ${FONT};
       color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(37,99,235,0.08), transparent 22%),
-        radial-gradient(circle at top right, rgba(15,118,110,0.08), transparent 24%),
-        linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
+      background: var(--bg);
       min-height: 100vh;
     }
     .page { max-width: 1400px; margin: 0 auto; padding: 28px; }
@@ -344,7 +343,6 @@ const buildPageHtml = () => `<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
-      backdrop-filter: blur(12px);
     }
     .hero {
       padding: 28px;
@@ -353,7 +351,7 @@ const buildPageHtml = () => `<!DOCTYPE html>
       gap: 18px;
       grid-template-columns: 1.8fr 1fr;
     }
-    .hero h1 { margin: 0; font-size: 36px; letter-spacing: -1.4px; }
+    .hero h1 { margin: 0; font-size: 36px; letter-spacing: -1.4px; color: var(--avo-ink); }
     .hero p { margin: 10px 0 0; color: var(--muted); line-height: 1.7; }
     .hero-stats {
       display: grid;
@@ -361,7 +359,7 @@ const buildPageHtml = () => `<!DOCTYPE html>
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .stat {
-      background: rgba(248,250,252,0.92);
+      background: ${BRAND.panel};
       border: 1px solid var(--border);
       border-radius: 18px;
       padding: 16px;
@@ -377,6 +375,7 @@ const buildPageHtml = () => `<!DOCTYPE html>
       margin-top: 8px;
       font-size: 28px;
       font-weight: 900;
+      color: var(--primary);
     }
     .toolbar {
       display: grid;
@@ -396,12 +395,17 @@ const buildPageHtml = () => `<!DOCTYPE html>
     }
     input {
       width: 100%;
-      border: 1px solid rgba(148,163,184,0.35);
+      border: 1px solid ${BRAND.rule};
       background: white;
-      border-radius: 14px;
+      border-radius: 10px;
       padding: 12px 14px;
       font: inherit;
       color: var(--text);
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px ${BRAND.blueSoft};
     }
     .actions {
       display: flex;
@@ -411,7 +415,7 @@ const buildPageHtml = () => `<!DOCTYPE html>
     }
     button {
       border: none;
-      border-radius: 14px;
+      border-radius: 8px;
       padding: 12px 16px;
       font: inherit;
       font-weight: 800;
@@ -420,8 +424,9 @@ const buildPageHtml = () => `<!DOCTYPE html>
     }
     button:hover { transform: translateY(-1px); }
     button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
-    .btn-primary { background: linear-gradient(135deg, var(--primary), #1d4ed8); color: white; }
-    .btn-soft { background: #ecfeff; color: var(--accent); }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-dark); }
+    .btn-soft { background: ${BRAND.blueTint}; color: var(--accent); box-shadow: inset 0 0 0 1px ${BRAND.blueSoft}; }
     .status {
       color: var(--muted);
       min-height: 20px;
@@ -454,13 +459,13 @@ const buildPageHtml = () => `<!DOCTYPE html>
     .pill {
       padding: 7px 10px;
       border-radius: 999px;
-      background: #e2e8f0;
-      color: #334155;
+      background: ${BRAND.blueTint};
+      color: ${BRAND.blueDark};
       font-size: 12px;
       font-weight: 800;
     }
     .detail {
-      background: rgba(248,250,252,0.92);
+      background: ${BRAND.panel};
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 14px;
@@ -481,8 +486,8 @@ const buildPageHtml = () => `<!DOCTYPE html>
       padding: 42px;
       text-align: center;
       color: var(--muted);
-      background: rgba(255,255,255,0.75);
-      border: 1px dashed rgba(148,163,184,0.4);
+      background: var(--surface);
+      border: 1px dashed ${BRAND.rule};
       border-radius: var(--radius);
     }
     @media (max-width: 1000px) {
@@ -491,6 +496,7 @@ const buildPageHtml = () => `<!DOCTYPE html>
   </style>
 </head>
 <body>
+  ${renderPageHeader()}
   <div class="page">
     <section class="hero">
       <div>
@@ -560,7 +566,7 @@ const buildPageHtml = () => `<!DOCTYPE html>
 
     const setStatus = (message, isError = false) => {
       statusMessage.textContent = message;
-      statusMessage.style.color = isError ? "#b91c1c" : "#64748b";
+      statusMessage.style.color = isError ? "${STATUS.criticalText}" : "${BRAND.muted}";
     };
 
     const renderCards = (items) => {

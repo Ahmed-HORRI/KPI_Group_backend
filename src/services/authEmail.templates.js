@@ -3,25 +3,30 @@
 // Built for Outlook first, since that is where they are read: table layout,
 // inline styles only, bgcolor attributes, a VML button for Outlook desktop,
 // and the logo attached inline (cid:) so it shows without "download pictures".
+// Colors, header and footer follow the AVOCarbon charter (src/config/brand.js).
 
-const path = require("path");
-
-const LOGO_CID = "kpi-manager-logo";
-const LOGO_PATH = path.join(__dirname, "..", "assets", "email", "avocarbon-logo.png");
+const {
+  BRAND,
+  STATUS,
+  FONT,
+  LOGO_CID,
+  LOGO_PATH,
+  logoAttachment,
+  renderEmailHeader,
+  renderEmailFooter
+} = require("../config/brand");
 
 const COLORS = {
-  brand: "#0078D7",
-  brandDark: "#005a9e",
-  ink: "#0f172a",
-  text: "#334155",
-  muted: "#64748b",
-  faint: "#94a3b8",
-  line: "#e2e8f0",
-  panel: "#f8fafc",
-  page: "#eef2f7"
+  brand: BRAND.blue,
+  brandDark: BRAND.blueDark,
+  ink: BRAND.ink,
+  text: BRAND.text,
+  muted: BRAND.muted,
+  faint: BRAND.faint,
+  line: BRAND.line,
+  panel: BRAND.panel,
+  page: BRAND.page
 };
-
-const FONT = "'Segoe UI',Arial,Helvetica,sans-serif";
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -54,17 +59,17 @@ const ROLE_LABELS = { admin: "Administrator", user: "User" };
 const renderButton = (label, link, color = COLORS.brand) => `
   <table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;">
     <tr>
-      <td align="center" bgcolor="${color}" style="border-radius:12px;background:${color};">
+      <td align="center" bgcolor="${color}" style="border-radius:8px;background:${color};">
         <!--[if mso]>
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-          href="${escapeHtml(link)}" style="height:50px;v-text-anchor:middle;width:260px;" arcsize="24%" stroke="f" fillcolor="${color}">
+          href="${escapeHtml(link)}" style="height:50px;v-text-anchor:middle;width:260px;" arcsize="16%" stroke="f" fillcolor="${color}">
           <w:anchorlock/>
           <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:bold;">${escapeHtml(label)}</center>
         </v:roundrect>
         <![endif]-->
         <!--[if !mso]><!-- -->
         <a href="${escapeHtml(link)}" target="_blank"
-           style="display:inline-block;padding:15px 34px;font-family:${FONT};font-size:15px;font-weight:700;line-height:20px;color:#ffffff;text-decoration:none;border-radius:12px;background:${color};">
+           style="display:inline-block;padding:15px 34px;font-family:${FONT};font-size:15px;font-weight:700;line-height:20px;color:#ffffff;text-decoration:none;border-radius:8px;background:${color};">
           ${escapeHtml(label)}&nbsp;&rarr;
         </a>
         <!--<![endif]-->
@@ -114,8 +119,8 @@ const renderSteps = (title, steps) => `
       <td width="34" valign="top" style="padding:0 0 12px;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0">
           <tr>
-            <td width="24" height="24" align="center" bgcolor="#e8f2fc"
-                style="width:24px;height:24px;border-radius:12px;background:#e8f2fc;font-family:${FONT};font-size:12px;font-weight:700;color:${COLORS.brand};line-height:24px;">
+            <td width="24" height="24" align="center" bgcolor="${BRAND.blueTint}"
+                style="width:24px;height:24px;border-radius:12px;background:${BRAND.blueTint};font-family:${FONT};font-size:12px;font-weight:700;color:${COLORS.brand};line-height:24px;">
               ${index + 1}
             </td>
           </tr>
@@ -146,25 +151,9 @@ const renderLayout = ({ preheader, badge, title, intro, sections, footerReason }
       <td align="center" style="padding:32px 12px;">
         <!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0"><tr><td><![endif]-->
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%"
-               style="max-width:600px;background:#ffffff;border:1px solid ${COLORS.line};border-radius:18px;" bgcolor="#ffffff">
+               style="max-width:600px;background:#ffffff;border:1px solid ${COLORS.line};border-radius:12px;" bgcolor="#ffffff">
           <tr>
-            <td height="6" bgcolor="${COLORS.brand}" style="height:6px;line-height:6px;font-size:0;background:${COLORS.brand};border-radius:18px 18px 0 0;">&nbsp;</td>
-          </tr>
-          <tr>
-            <td style="padding:26px 36px 0;">
-              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td valign="middle">
-                    <img src="cid:${LOGO_CID}" width="170" height="31" alt="AVOCarbon Group"
-                         style="display:block;width:170px;height:31px;border:0;outline:none;text-decoration:none;">
-                  </td>
-                  <td valign="middle" align="right"
-                      style="font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:1.6px;color:${COLORS.faint};text-transform:uppercase;">
-                    KPI Manager
-                  </td>
-                </tr>
-              </table>
-            </td>
+            <td style="padding:0;">${renderEmailHeader({ radius: 12 })}</td>
           </tr>
           <tr>
             <td style="padding:30px 36px 0;">
@@ -184,17 +173,7 @@ const renderLayout = ({ preheader, badge, title, intro, sections, footerReason }
           </tr>
           ${sections.map((section) => `<tr><td style="padding:${section.padding || "24px 36px 0"};">${section.html}</td></tr>`).join("")}
           <tr>
-            <td style="padding:30px 36px 32px;">
-              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr><td height="1" bgcolor="${COLORS.line}" style="height:1px;line-height:1px;font-size:0;background:${COLORS.line};">&nbsp;</td></tr>
-              </table>
-              <p style="margin:18px 0 0;font-family:${FONT};font-size:12px;line-height:19px;color:${COLORS.muted};">
-                ${footerReason}
-              </p>
-              <p style="margin:8px 0 0;font-family:${FONT};font-size:12px;line-height:19px;color:${COLORS.faint};">
-                AVOCarbon Group &middot; KPI Manager &middot; This is an automated message, please do not reply.
-              </p>
-            </td>
+            <td style="padding:6px 4px 0;">${renderEmailFooter({ note: footerReason })}</td>
           </tr>
         </table>
         <!--[if mso]></td></tr></table><![endif]-->
@@ -203,8 +182,6 @@ const renderLayout = ({ preheader, badge, title, intro, sections, footerReason }
   </table>
 </body>
 </html>`;
-
-const logoAttachment = () => ({ filename: "avocarbon-logo.png", path: LOGO_PATH, cid: LOGO_CID });
 
 const fallbackLinkSection = (link) => ({
   html: `
@@ -233,7 +210,7 @@ const buildInvitationEmail = ({ fullName, email, role, link, expiresAt, ttlMs, i
 
   const html = renderLayout({
     preheader: "Activate your KPI Manager account: choose your password.",
-    badge: { label: "Account invitation", background: "#e8f2fc", color: COLORS.brandDark },
+    badge: { label: "Account invitation", background: BRAND.blueTint, color: COLORS.brandDark },
     title: "Welcome to KPI Manager",
     intro,
     sections: [
@@ -249,7 +226,7 @@ const buildInvitationEmail = ({ fullName, email, role, link, expiresAt, ttlMs, i
         padding: "24px 36px 0",
         html: renderNotice(
           `<strong>This link works once</strong> and expires in ${escapeHtml(expiry)}. If it expires, ask your administrator for a new invitation.`,
-          { background: "#fffbeb", border: "#fde68a", color: "#f59e0b" }
+          { background: STATUS.warningTint, border: STATUS.warningSoft, color: STATUS.warning }
         )
       },
       {
@@ -301,7 +278,7 @@ const buildPasswordResetEmail = ({ fullName, email, link, expiresAt, ttlMs, requ
 
   const html = renderLayout({
     preheader: "Choose a new password for your KPI Manager account. The link expires soon.",
-    badge: { label: "Password reset", background: "#f1f5f9", color: COLORS.text },
+    badge: { label: "Password reset", background: BRAND.orangeTint, color: BRAND.orangeText },
     title: "Reset your password",
     intro,
     sections: [
@@ -316,7 +293,7 @@ const buildPasswordResetEmail = ({ fullName, email, link, expiresAt, ttlMs, requ
         padding: "24px 36px 0",
         html: renderNotice(
           `<strong>This link works once</strong> and expires in ${escapeHtml(expiry)}. Once your password is changed, every device signed in to your account is signed out.`,
-          { background: "#fffbeb", border: "#fde68a", color: "#f59e0b" }
+          { background: STATUS.warningTint, border: STATUS.warningSoft, color: STATUS.warning }
         )
       },
       {

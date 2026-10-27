@@ -541,8 +541,8 @@ test("invitation: the account works only once the user has chosen a password", a
   assert.equal(mail.subject, "Your KPI Manager account is ready");
   assert.match(mail.text, /mode=invite/);
   assert.match(mail.html, /First Admin/, "the invitation names the administrator who sent it");
-  assert.match(mail.html, /cid:kpi-manager-logo/);
-  assert.equal(mail.attachments[0].cid, "kpi-manager-logo", "the logo is attached inline");
+  assert.match(mail.html, /cid:avocarbon-logo/);
+  assert.equal(mail.attachments[0].cid, "avocarbon-logo", "the logo is attached inline");
   assert.ok(require("node:fs").existsSync(mail.attachments[0].path), "the logo file exists");
   const token = extractToken(mail);
 

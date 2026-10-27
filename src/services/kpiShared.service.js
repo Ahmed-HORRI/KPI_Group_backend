@@ -1,3 +1,4 @@
+const { BRAND, STATUS } = require("../config/brand");
 const { pool } = require("../config/db");
 const { normalizeOptionalTextInput, normalizeOptionalIntegerInput } = require("../utils/normalize");
 const {
@@ -359,9 +360,9 @@ const getKpiGoodDirectionMeta = (direction) => {
       label: 'Down',
       summary: 'Lower is better',
       examples: 'Scrap, accidents, customer claims',
-      accent: '#dc2626',
-      background: '#fff5f5',
-      border: '#fecaca',
+      accent: STATUS.criticalText,
+      background: STATUS.criticalTint,
+      border: STATUS.criticalSoft,
       icon: '&darr;'
     };
   }
@@ -371,9 +372,9 @@ const getKpiGoodDirectionMeta = (direction) => {
     label: 'Up',
     summary: 'Higher is better',
     examples: 'Sales, OTD',
-    accent: '#16a34a',
-    background: '#f0fdf4',
-    border: '#bbf7d0',
+    accent: STATUS.goodText,
+    background: STATUS.goodTint,
+    border: STATUS.goodSoft,
     icon: '&uarr;'
   };
 };
@@ -385,7 +386,7 @@ const getKpiStatus = (value, lowLimit, highLimit, direction = 'up') => {
 
   if (val === null) {
     return {
-      color: '#6c757d',
+      color: BRAND.faint,
       isGood: null,
       direction: resolvedDirection,
       lowerBound,
@@ -401,7 +402,7 @@ const getKpiStatus = (value, lowLimit, highLimit, direction = 'up') => {
       : isBelowLower;
 
   return {
-    color: isBad ? '#dc3545' : '#28a745',
+    color: isBad ? STATUS.critical : STATUS.good,
     isGood: !isBad,
     direction: resolvedDirection,
     lowerBound,
@@ -425,7 +426,7 @@ const getDashboardSubmissionStatus = (kpi) => {
 
   if (currentValue === null) {
     return {
-      color: "#6c757d",
+      color: BRAND.faint,
       isGood: null,
       minimumTargetValue: null,
       targetValue,
@@ -461,7 +462,7 @@ const getDashboardSubmissionStatus = (kpi) => {
     );
 
     return {
-      color: currentValue < minimumTargetValue ? "#dc3545" : "#28a745",
+      color: currentValue < minimumTargetValue ? STATUS.critical : STATUS.good,
       isGood: currentValue >= minimumTargetValue,
       minimumTargetValue,
       targetValue,

@@ -22,6 +22,16 @@ const {
   inferKpiDirection,
   calculateKpiTargetAdjustmentProposal,
 } = require("./kpiShared.service");
+// AVOCarbon graphic charter (pure module): colors, e-mail header/footer, logo.
+const {
+  BRAND,
+  STATUS,
+  FONT,
+  logoAttachment,
+  renderEmailHeader,
+  renderEmailFooter,
+  renderEmailButton,
+} = require("../config/brand");
 
 let kpiTargetAdjustmentSchemaPromise = null;
 
@@ -334,8 +344,8 @@ const sendKpiTargetAdjustmentApprovalEmail = async (proposal = {}) => {
   const evidenceRowsHtml = (proposal.evidence || [])
     .map((entry, index) => `
       <tr>
-        <td style="padding:10px 12px;border-bottom:1px solid #e9eef4;color:#667085;font-size:13px;">${escapeHtml(entry.period_label || `Period ${index + 1}`)}</td>
-        <td align="right" style="padding:10px 12px;border-bottom:1px solid #e9eef4;color:#172033;font-size:14px;font-weight:700;">${escapeHtml(entry.actual_value)} ${escapeHtml(proposal.unit || "")}</td>
+        <td style="padding:10px 12px;border-top:1px solid ${BRAND.line};color:${BRAND.muted};font-size:13px;">${escapeHtml(entry.period_label || `Period ${index + 1}`)}</td>
+        <td align="right" style="padding:10px 12px;border-top:1px solid ${BRAND.line};color:${BRAND.ink};font-size:14px;font-weight:700;">${escapeHtml(entry.actual_value)} ${escapeHtml(proposal.unit || "")}</td>
       </tr>
     `)
     .join("");
@@ -354,84 +364,78 @@ const sendKpiTargetAdjustmentApprovalEmail = async (proposal = {}) => {
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <title>KPI target approval</title>
       </head>
-      <body style="margin:0;padding:0;background-color:#eef2f6;font-family:Segoe UI,Arial,sans-serif;color:#172033;">
+      <body style="margin:0;padding:0;background-color:${BRAND.page};font-family:${FONT};color:${BRAND.text};">
         <div style="display:none;max-height:0;overflow:hidden;opacity:0;">A new KPI target is waiting for your approval.</div>
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#eef2f6;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="${BRAND.page}" style="background-color:${BRAND.page};">
           <tr>
             <td align="center" style="padding:28px 12px;">
-              <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background:#ffffff;border:1px solid #dce4ec;border-radius:18px;overflow:hidden;box-shadow:0 12px 30px rgba(15,23,42,.08);">
+              <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" bgcolor="${BRAND.white}" style="width:100%;max-width:640px;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
                 <tr>
-                  <td style="height:7px;font-size:0;line-height:0;background-color:#13aaa3;">&nbsp;</td>
+                  <td style="padding:0;">${renderEmailHeader({ label: "KPI target approval", radius: 12 })}</td>
                 </tr>
                 <tr>
-                  <td style="padding:24px 30px;background-color:#102a43;">
+                  <td style="padding:28px 30px 12px;font-family:${FONT};">
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                      <tr>
+                        <td bgcolor="${STATUS.warningTint}" style="padding:5px 12px;border-radius:999px;background:${STATUS.warningTint};border:1px solid ${STATUS.warningSoft};color:${STATUS.warningText};font-size:11px;font-weight:800;letter-spacing:.6px;">APPROVAL REQUIRED</td>
+                      </tr>
+                    </table>
+                    <p style="margin:16px 0 6px;color:${BRAND.blue};font-size:12px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">New target proposal</p>
+                    <h1 style="margin:0;color:${BRAND.ink};font-size:26px;line-height:1.2;letter-spacing:-.3px;">${escapeHtml(proposal.kpi_name)}</h1>
+                    ${proposal.subject_name ? `<p style="margin:7px 0 0;color:${BRAND.muted};font-size:14px;">${escapeHtml(proposal.subject_name)}</p>` : ""}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 30px 0;font-family:${FONT};">
+                    <p style="margin:0;color:${BRAND.text};font-size:15px;line-height:1.65;">Hello <strong style="color:${BRAND.ink};">${escapeHtml(proposal.approver?.name || "Manager")}</strong>,<br>a performance improvement has triggered a new target proposal. Your approval is required before it can take effect.</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:24px 30px 8px;font-family:${FONT};">
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                       <tr>
-                        <td style="color:#ffffff;font-size:20px;font-weight:800;letter-spacing:-.3px;">KPI Group</td>
-                        <td align="right"><span style="display:inline-block;padding:6px 10px;border-radius:20px;background-color:#fff3cd;color:#805b00;font-size:11px;font-weight:800;letter-spacing:.5px;">APPROVAL REQUIRED</span></td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:30px 30px 12px;">
-                    <p style="margin:0 0 8px;color:#13a39c;font-size:12px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">New target proposal</p>
-                    <h1 style="margin:0;color:#172033;font-size:27px;line-height:1.2;letter-spacing:-.5px;">${escapeHtml(proposal.kpi_name)}</h1>
-                    ${proposal.subject_name ? `<p style="margin:7px 0 0;color:#667085;font-size:14px;">${escapeHtml(proposal.subject_name)}</p>` : ""}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:8px 30px 0;">
-                    <p style="margin:0;color:#475467;font-size:15px;line-height:1.65;">Hello <strong style="color:#172033;">${escapeHtml(proposal.approver?.name || "Manager")}</strong>,<br>a performance improvement has triggered a new target proposal. Your approval is required before it can take effect.</p>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:24px 30px 8px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-                      <tr>
-                        <td width="44%" valign="middle" style="padding:18px;border:1px solid #dfe6ee;border-radius:12px;background:#f8fafc;">
-                          <div style="color:#667085;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Current target</div>
-                          <div style="margin-top:7px;color:#344054;font-size:25px;font-weight:800;">${escapeHtml(proposal.previous_target_value)} <span style="font-size:13px;font-weight:600;color:#667085;">${escapeHtml(proposal.unit || "")}</span></div>
+                        <td width="44%" valign="middle" bgcolor="${BRAND.panel}" style="padding:18px;border:1px solid ${BRAND.line};border-radius:12px;background:${BRAND.panel};">
+                          <div style="color:${BRAND.muted};font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Current target</div>
+                          <div style="margin-top:7px;color:${BRAND.ink};font-size:25px;font-weight:800;">${escapeHtml(proposal.previous_target_value)} <span style="font-size:13px;font-weight:600;color:${BRAND.muted};">${escapeHtml(proposal.unit || "")}</span></div>
                         </td>
-                        <td width="12%" align="center" style="color:#13a39c;font-size:25px;font-weight:900;">&#8594;</td>
-                        <td width="44%" valign="middle" style="padding:18px;border:1px solid #9ddfd8;border-radius:12px;background:#eaf9f6;">
-                          <div style="color:#087f78;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">Proposed target</div>
-                          <div style="margin-top:7px;color:#087f78;font-size:25px;font-weight:900;">${escapeHtml(proposal.proposed_target_value)} <span style="font-size:13px;font-weight:700;">${escapeHtml(proposal.unit || "")}</span></div>
+                        <td width="12%" align="center" style="color:${BRAND.blue};font-size:25px;font-weight:900;">&#8594;</td>
+                        <td width="44%" valign="middle" bgcolor="${BRAND.blueTint}" style="padding:18px;border:1px solid ${BRAND.blueSoft};border-radius:12px;background:${BRAND.blueTint};">
+                          <div style="color:${BRAND.blueDark};font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">Proposed target</div>
+                          <div style="margin-top:7px;color:${BRAND.blueDark};font-size:25px;font-weight:900;">${escapeHtml(proposal.proposed_target_value)} <span style="font-size:13px;font-weight:700;">${escapeHtml(proposal.unit || "")}</span></div>
                         </td>
                       </tr>
                     </table>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding:16px 30px 4px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #dfe6ee;border-radius:12px;overflow:hidden;">
+                  <td style="padding:16px 30px 4px;font-family:${FONT};">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid ${BRAND.line};border-radius:12px;border-collapse:separate;">
                       <tr>
-                        <td width="50%" style="padding:13px 16px;border-right:1px solid #e5eaf0;background:#ffffff;">
-                          <div style="color:#667085;font-size:11px;font-weight:700;text-transform:uppercase;">Performance direction</div>
-                          <div style="margin-top:5px;color:#172033;font-size:14px;font-weight:800;"><span style="color:#13a39c;font-size:18px;">${directionArrow}</span>&nbsp; ${directionLabel}</div>
+                        <td width="50%" style="padding:13px 16px;border-right:1px solid ${BRAND.line};">
+                          <div style="color:${BRAND.muted};font-size:11px;font-weight:700;text-transform:uppercase;">Performance direction</div>
+                          <div style="margin-top:5px;color:${BRAND.ink};font-size:14px;font-weight:800;"><span style="color:${BRAND.blue};font-size:18px;">${directionArrow}</span>&nbsp; ${directionLabel}</div>
                         </td>
-                        <td width="50%" style="padding:13px 16px;background:#ffffff;">
-                          <div style="color:#667085;font-size:11px;font-weight:700;text-transform:uppercase;">Current improvement</div>
-                          <div style="margin-top:5px;color:#172033;font-size:14px;font-weight:800;">${improvementLabel}</div>
+                        <td width="50%" style="padding:13px 16px;">
+                          <div style="color:${BRAND.muted};font-size:11px;font-weight:700;text-transform:uppercase;">Current improvement</div>
+                          <div style="margin-top:5px;color:${BRAND.ink};font-size:14px;font-weight:800;">${improvementLabel}</div>
                         </td>
                       </tr>
                       <tr>
-                        <td colspan="2" style="padding:13px 16px;border-top:1px solid #e5eaf0;background:#f8fafc;">
-                          <div style="color:#667085;font-size:11px;font-weight:700;text-transform:uppercase;">KPI owner</div>
-                          <div style="margin-top:5px;color:#172033;font-size:14px;font-weight:700;">${escapeHtml(proposal.responsible?.name || "Not specified")}</div>
+                        <td colspan="2" bgcolor="${BRAND.panel}" style="padding:13px 16px;border-top:1px solid ${BRAND.line};background:${BRAND.panel};border-radius:0 0 12px 12px;">
+                          <div style="color:${BRAND.muted};font-size:11px;font-weight:700;text-transform:uppercase;">KPI owner</div>
+                          <div style="margin-top:5px;color:${BRAND.ink};font-size:14px;font-weight:700;">${escapeHtml(proposal.responsible?.name || "Not specified")}</div>
                         </td>
                       </tr>
                     </table>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding:16px 30px 4px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#fff8e6;border:1px solid #f0d69a;border-radius:12px;">
+                  <td style="padding:16px 30px 4px;font-family:${FONT};">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="${BRAND.orangeTint}" style="background:${BRAND.orangeTint};border:1px solid ${BRAND.orangeSoft};border-left:4px solid ${BRAND.orange};border-radius:8px;">
                       <tr>
-                        <td width="42" valign="top" style="padding:15px 0 15px 16px;color:#a36b00;font-size:21px;">&#9679;</td>
-                        <td style="padding:14px 16px 14px 8px;">
-                          <div style="color:#805b00;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">Why was this proposed?</div>
-                          <div style="margin-top:5px;color:#5f470f;font-size:14px;line-height:1.5;">${escapeHtml(getKpiTargetAdjustmentReasonLabelEnglish(proposal.trigger_reason))}</div>
+                        <td style="padding:14px 16px;">
+                          <div style="color:${BRAND.orangeText};font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">Why was this proposed?</div>
+                          <div style="margin-top:5px;color:${BRAND.text};font-size:14px;line-height:1.5;">${escapeHtml(getKpiTargetAdjustmentReasonLabelEnglish(proposal.trigger_reason))}</div>
                         </td>
                       </tr>
                     </table>
@@ -439,27 +443,27 @@ const sendKpiTargetAdjustmentApprovalEmail = async (proposal = {}) => {
                 </tr>
                 ${evidenceRowsHtml ? `
                 <tr>
-                  <td style="padding:20px 30px 4px;">
-                    <p style="margin:0 0 9px;color:#344054;font-size:13px;font-weight:800;">Analyzed values</p>
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #dfe6ee;border-radius:10px;overflow:hidden;">
-                      <tr><th align="left" style="padding:9px 12px;background:#f5f7fa;color:#667085;font-size:11px;text-transform:uppercase;">Period</th><th align="right" style="padding:9px 12px;background:#f5f7fa;color:#667085;font-size:11px;text-transform:uppercase;">Actual value</th></tr>
+                  <td style="padding:20px 30px 4px;font-family:${FONT};">
+                    <p style="margin:0 0 9px;color:${BRAND.ink};font-size:13px;font-weight:800;">Analyzed values</p>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid ${BRAND.line};border-radius:10px;border-collapse:separate;">
+                      <tr><th align="left" bgcolor="${BRAND.panel}" style="padding:9px 12px;background:${BRAND.panel};color:${BRAND.muted};font-size:11px;text-transform:uppercase;border-radius:10px 0 0 0;">Period</th><th align="right" bgcolor="${BRAND.panel}" style="padding:9px 12px;background:${BRAND.panel};color:${BRAND.muted};font-size:11px;text-transform:uppercase;border-radius:0 10px 0 0;">Actual value</th></tr>
                       ${evidenceRowsHtml}
                     </table>
                   </td>
                 </tr>` : ""}
                 <tr>
-                  <td align="center" style="padding:27px 30px 12px;">
-                    <a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:14px 28px;border-radius:10px;background-color:#1677c8;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;box-shadow:0 6px 14px rgba(22,119,200,.22);">Review and decide</a>
+                  <td align="center" style="padding:28px 30px 12px;">
+                    ${renderEmailButton({ label: "Review and decide", href: escapeHtml(reviewUrl), width: 220 })}
                   </td>
                 </tr>
                 <tr>
-                  <td align="center" style="padding:0 30px 28px;">
-                    <p style="margin:0;color:#667085;font-size:12px;line-height:1.5;">The active target will remain unchanged until you approve this proposal.</p>
+                  <td align="center" style="padding:0 30px 4px;font-family:${FONT};">
+                    <p style="margin:0;color:${BRAND.muted};font-size:12px;line-height:1.5;">The active target will remain unchanged until you approve this proposal.</p>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding:18px 30px;background:#f8fafc;border-top:1px solid #e5eaf0;">
-                    <p style="margin:0;color:#98a2b3;font-size:11px;line-height:1.5;text-align:center;">KPI Group &bull; Automated target governance message<br>If the button does not work, open this link: <a href="${escapeHtml(reviewUrl)}" style="color:#1677c8;word-break:break-all;">${escapeHtml(reviewUrl)}</a></p>
+                  <td style="padding:0;">
+                    ${renderEmailFooter({ note: `Automated target governance message. If the button does not work, open this link: <a href="${escapeHtml(reviewUrl)}" style="color:${BRAND.blue};word-break:break-all;">${escapeHtml(reviewUrl)}</a>` })}
                   </td>
                 </tr>
               </table>
@@ -468,7 +472,8 @@ const sendKpiTargetAdjustmentApprovalEmail = async (proposal = {}) => {
         </table>
       </body>
       </html>
-    `
+    `,
+    attachments: [logoAttachment()]
   });
 
   return true;
@@ -519,8 +524,11 @@ const sendKpiTargetAdjustmentDecisionEmail = async (proposal, action) => {
   const recipientEmail = normalizeOptionalTextInput(proposal?.responsible_email);
   if (!recipientEmail) return false;
   const approved = action === "approve";
-  const statusColor = approved ? "#087f5b" : "#b42318";
-  const statusBackground = approved ? "#e8f8f1" : "#fff0f0";
+  // Approved / rejected keep their status meaning (good / critical).
+  const statusColor = approved ? STATUS.goodText : STATUS.criticalText;
+  const statusAccent = approved ? STATUS.good : STATUS.critical;
+  const statusBackground = approved ? STATUS.goodTint : STATUS.criticalTint;
+  const statusBorder = approved ? STATUS.goodSoft : STATUS.criticalSoft;
   const statusLabel = approved ? "TARGET APPROVED" : "PROPOSAL REJECTED";
   const transporter = createTransporter();
   await transporter.sendMail({
@@ -529,24 +537,28 @@ const sendKpiTargetAdjustmentDecisionEmail = async (proposal, action) => {
     to: recipientEmail,
     subject: `${approved ? "KPI target approved" : "KPI target rejected"} - ${proposal.kpi_name}`,
     html: `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-      <body style="margin:0;padding:0;background:#eef2f6;font-family:Segoe UI,Arial,sans-serif;color:#172033;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:28px 12px;">
-          <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #dce4ec;border-radius:16px;overflow:hidden;">
-            <tr><td style="height:7px;background:${statusColor};font-size:0;line-height:0;">&nbsp;</td></tr>
-            <tr><td style="padding:22px 28px;background:#102a43;color:#fff;font-size:19px;font-weight:800;">KPI Group</td></tr>
-            <tr><td style="padding:28px;">
-              <span style="display:inline-block;padding:6px 10px;border-radius:20px;background:${statusBackground};color:${statusColor};font-size:11px;font-weight:900;">${statusLabel}</span>
-              <h2 style="margin:16px 0 7px;font-size:24px;">${escapeHtml(proposal.kpi_name)}</h2>
-              <p style="margin:0 0 22px;color:#667085;line-height:1.6;">${approved ? "The target proposal has been approved by the manager." : "The target proposal was not approved by the manager."}</p>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #dfe6ee;border-radius:11px;overflow:hidden;">
-                <tr><td style="padding:13px 15px;background:#f8fafc;color:#667085;font-size:12px;">Proposed target</td><td align="right" style="padding:13px 15px;background:#f8fafc;color:#172033;font-size:17px;font-weight:800;">${escapeHtml(proposal.proposed_target_value)} ${escapeHtml(proposal.target_unit || "")}</td></tr>
+      <body style="margin:0;padding:0;background:${BRAND.page};font-family:${FONT};color:${BRAND.text};">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="${BRAND.page}" style="background:${BRAND.page};"><tr><td align="center" style="padding:28px 12px;">
+          <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="${BRAND.white}" style="width:100%;max-width:600px;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
+            <tr><td style="padding:0;">${renderEmailHeader({ label: "KPI target approval", radius: 12 })}</td></tr>
+            <tr><td style="padding:28px 30px 4px;font-family:${FONT};">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr>
+                <td bgcolor="${statusBackground}" style="padding:5px 12px;border-radius:999px;background:${statusBackground};border:1px solid ${statusBorder};color:${statusColor};font-size:11px;font-weight:800;letter-spacing:.6px;">${statusLabel}</td>
+              </tr></table>
+              <h2 style="margin:16px 0 7px;font-size:24px;line-height:1.25;color:${BRAND.ink};">${escapeHtml(proposal.kpi_name)}</h2>
+              <p style="margin:0 0 22px;color:${BRAND.text};font-size:15px;line-height:1.6;">${approved ? "The target proposal has been approved by the manager." : "The target proposal was not approved by the manager."}</p>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="${BRAND.panel}" style="border:1px solid ${BRAND.line};border-radius:10px;background:${BRAND.panel};">
+                <tr><td style="padding:13px 15px;color:${BRAND.muted};font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Proposed target</td><td align="right" style="padding:13px 15px;color:${BRAND.ink};font-size:17px;font-weight:800;">${escapeHtml(proposal.proposed_target_value)} ${escapeHtml(proposal.target_unit || "")}</td></tr>
               </table>
-              <p style="margin:20px 0 0;padding:14px 16px;border-radius:10px;background:${statusBackground};color:${statusColor};font-size:14px;font-weight:700;line-height:1.5;">${approved ? "The new target will apply only to future periods." : "The current target remains unchanged."}</p>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="${statusBackground}" style="margin-top:20px;background:${statusBackground};border:1px solid ${statusBorder};border-left:4px solid ${statusAccent};border-radius:8px;">
+                <tr><td style="padding:14px 16px;color:${statusColor};font-size:14px;font-weight:700;line-height:1.5;">${approved ? "The new target will apply only to future periods." : "The current target remains unchanged."}</td></tr>
+              </table>
             </td></tr>
-            <tr><td align="center" style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e5eaf0;color:#98a2b3;font-size:11px;">KPI Group &bull; Automated notification</td></tr>
+            <tr><td style="padding:0;">${renderEmailFooter({ note: "Automated notification of the KPI target governance workflow." })}</td></tr>
           </table>
         </td></tr></table>
-      </body></html>`
+      </body></html>`,
+    attachments: [logoAttachment()]
   });
   return true;
 };

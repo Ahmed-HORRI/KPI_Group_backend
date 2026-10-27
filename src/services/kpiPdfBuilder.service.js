@@ -3,7 +3,12 @@
  * kpi-pdf-builder.js  — CONTINUOUS FLOW VERSION
  * Sections no longer force new pages; content flows naturally and only
  * breaks when it genuinely doesn't fit in the remaining space.
+ * Colors and header follow the AVOCarbon charter (src/config/brand.js).
  */
+
+const fs = require("fs");
+const zlib = require("zlib");
+const { BRAND, STATUS, LOGO_PATH } = require("../config/brand");
 
 // ─── PDF low-level writer ────────────────────────────────────────────────────
 class PDFWriter {
@@ -61,15 +66,29 @@ class PDFWriter {
     this._endObj();
     return id;
   }
-  writeResources() {
+  writeResources(logoImageId = null) {
     const id = this._startObj();
     this._write(
       `<< /Font <<\n` +
       `   /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\n` +
       `   /F2 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\n` +
       `   /F3 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>\n` +
-      `>> >>\n`
+      `>>\n` +
+      (logoImageId ? `   /XObject << /Logo ${logoImageId} 0 R >>\n` : "") +
+      `>>\n`
     );
+    this._endObj();
+    return id;
+  }
+  /** RGB image XObject; `data` is the zlib-compressed pixel rows. */
+  writeImage({ width, height, data }) {
+    const id = this._startObj();
+    this._write(
+      `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height}\n` +
+      `   /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ${data.length} >>\nstream\n`
+    );
+    this._writeBuf(data);
+    this._write("\nendstream\n");
     this._endObj();
     return id;
   }
@@ -105,6 +124,72 @@ function hex2rgb(hex) {
 function rgbCmd(hex) {
   const [r,g,b] = hex2rgb(hex);
   return `${r.toFixed(3)} ${g.toFixed(3)} ${b.toFixed(3)}`;
+}
+
+// ─── Logo ────────────────────────────────────────────────────────────────────
+// The charter logo (8-bit RGBA or RGB PNG, not interlaced) decoded once into
+// RGB rows flattened on white -- it is only drawn on the white page. null when
+// it cannot be read: the header then falls back to a text wordmark.
+let logoImageCache;
+function loadLogoImage() {
+  if (logoImageCache !== undefined) return logoImageCache;
+  logoImageCache = null;
+  try {
+    const png = fs.readFileSync(LOGO_PATH);
+    let width = 0, height = 0, depth = 0, colorType = 0, interlace = 0;
+    const idat = [];
+    for (let off = 8; off + 8 <= png.length;) {
+      const len = png.readUInt32BE(off);
+      const type = png.toString("latin1", off + 4, off + 8);
+      const chunk = png.subarray(off + 8, off + 8 + len);
+      if (type === "IHDR") {
+        width = chunk.readUInt32BE(0); height = chunk.readUInt32BE(4);
+        depth = chunk[8]; colorType = chunk[9]; interlace = chunk[12];
+      } else if (type === "IDAT") idat.push(chunk);
+      else if (type === "IEND") break;
+      off += 12 + len;
+    }
+    if (!width || !height || depth !== 8 || interlace !== 0 || (colorType !== 6 && colorType !== 2)) {
+      return logoImageCache;
+    }
+
+    const bpp = colorType === 6 ? 4 : 3;
+    const stride = width * bpp;
+    const raw = zlib.inflateSync(Buffer.concat(idat));
+    if (raw.length < height * (stride + 1)) return logoImageCache;
+
+    const rgb = Buffer.alloc(width * height * 3);
+    let prev = Buffer.alloc(stride);
+    for (let y = 0; y < height; y++) {
+      const filter = raw[y * (stride + 1)];
+      const line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+      // Undo the PNG row filter (None, Sub, Up, Average, Paeth).
+      for (let i = 0; i < stride; i++) {
+        const a = i >= bpp ? line[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+        let p = 0;
+        if (filter === 1) p = a;
+        else if (filter === 2) p = b;
+        else if (filter === 3) p = (a + b) >> 1;
+        else if (filter === 4) {
+          const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c);
+          p = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        }
+        line[i] = (line[i] + p) & 0xff;
+      }
+      for (let x = 0; x < width; x++) {
+        const alpha = bpp === 4 ? line[x * 4 + 3] / 255 : 1;
+        for (let ch = 0; ch < 3; ch++) {
+          rgb[(y * width + x) * 3 + ch] = Math.round(line[x * bpp + ch] * alpha + 255 * (1 - alpha));
+        }
+      }
+      prev = line;
+    }
+    logoImageCache = { width, height, data: zlib.deflateSync(rgb) };
+  } catch (err) {
+    console.warn("[KPI PDF] Logo unavailable, using the text wordmark:", err.message);
+    logoImageCache = null;
+  }
+  return logoImageCache;
 }
 
 const CHAR_WIDTHS = {
@@ -174,6 +259,9 @@ class Page {
     this.setFill(fillHex); this.setStroke(strokeHex); this.setLineWidth(lw);
     this.ops.push(`${x.toFixed(2)} ${y.toFixed(2)} ${w.toFixed(2)} ${h.toFixed(2)} re B`);
   }
+  image(name,x,y,w,h) {
+    this.ops.push(`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)} cm /${name} Do Q`);
+  }
   hline(x,y,w,strokeHex,lw=0.5) {
     this.setStroke(strokeHex); this.setLineWidth(lw);
     this.ops.push(`${x.toFixed(2)} ${y.toFixed(2)} m ${(x+w).toFixed(2)} ${y.toFixed(2)} l S`);
@@ -223,27 +311,37 @@ const PW=595.28, PH=841.89;
 const ML=36, MR=36, MT=36, MB=48;
 const CW=PW-ML-MR;
 
+// AVOCarbon charter: AVO blue primary, GROUP orange as accent only (bars),
+// neutral grays for text and lines. Status colors keep their meaning and use
+// the darker *Text shades, readable as text and under white badge labels.
 const C = {
-  blue:"#0078D7", darkBlue:"#005ea6", lightBlue:"#e3f2fd",
-  green:"#28a745", lightGreen:"#e8f5e9",
-  red:"#dc3545",   lightRed:"#fff5f5",
-  orange:"#ff9800",lightOrange:"#fff3e0",
-  gray:"#6c757d",  lightGray:"#f8f9fa",
-  border:"#e5e7eb",darkText:"#1f2937",
-  midText:"#374151",softText:"#6b7280",
-  white:"#ffffff", purple:"#7c3aed", lightPurple:"#f5f3ff",
+  blue:BRAND.blue,       darkBlue:BRAND.blueDark,     lightBlue:BRAND.blueTint,
+  orange:BRAND.orange,   orangeText:BRAND.orangeText, lightOrange:BRAND.orangeTint, orangeSoft:BRAND.orangeSoft,
+  green:STATUS.goodText,     lightGreen:STATUS.goodTint,     greenSoft:STATUS.goodSoft,
+  red:STATUS.criticalText,   lightRed:STATUS.criticalTint,   redSoft:STATUS.criticalSoft,
+  amber:STATUS.warningText,  lightAmber:STATUS.warningTint,  amberSoft:STATUS.warningSoft,
+  gray:BRAND.muted,      lightGray:BRAND.panel,  carbon:BRAND.gray,
+  border:BRAND.line,     darkText:BRAND.ink,
+  midText:BRAND.text,    softText:BRAND.muted,
+  white:BRAND.white,
 };
 
 function statusInfo(value, lowLimit) {
   try {
-    const v=parseFloat(value); if(isNaN(v)) return {label:"No Data",color:C.gray,bg:C.lightGray};
+    const v=parseFloat(value); if(isNaN(v)) return {label:"No Data",color:C.gray,bg:C.lightGray,border:C.border};
     const ll=parseFloat(lowLimit);
     if(!isNaN(ll)){
-      if(v<ll)        return {label:"Below Limit",color:C.red,   bg:C.lightRed   };
-      if(v<ll*1.10)   return {label:"Near Limit", color:C.orange,bg:C.lightOrange};
+      if(v<ll)        return {label:"Below Limit",color:C.red,  bg:C.lightRed,  border:C.redSoft  };
+      if(v<ll*1.10)   return {label:"Near Limit", color:C.amber,bg:C.lightAmber,border:C.amberSoft};
     }
-    return {label:"On Track",color:C.green,bg:C.lightGreen};
-  } catch { return {label:"No Data",color:C.gray,bg:C.lightGray}; }
+    return {label:"On Track",color:C.green,bg:C.lightGreen,border:C.greenSoft};
+  } catch { return {label:"No Data",color:C.gray,bg:C.lightGray,border:C.border}; }
+}
+
+// Brand bar: AVO blue ending in a GROUP orange segment (as under the e-mail header).
+function drawBrandBar(page, x, y, w, h) {
+  page.rect(x, y, w*0.84, h, C.blue);
+  page.rect(x + w*0.84, y, w*0.16, h, C.orange);
 }
 
 function fmtVal(v,unit="") {
@@ -296,10 +394,11 @@ class DocState {
 
 // ─── Page decorator ───────────────────────────────────────────────────────────
 function decoratePage(page, pageNum, totalPages, week, responsible) {
-  page.rect(0, PH-6, PW, 6, C.blue);
+  // Page 1 opens with the logo header and its own brand bar (buildCover).
+  if (pageNum > 1) drawBrandBar(page, 0, PH-4, PW, 4);
   page.rect(0, 0, PW, MB-4, C.lightGray);
   page.hline(0, MB-4, PW, C.border, 0.5);
-  page.text("AVOCarbon KPI Recommendation Report - Confidential", ML, 13, 7, false, C.softText);
+  page.text("AVOCarbon Group - KPI Recommendation Report - Confidential", ML, 13, 7, false, C.softText);
   page.textRight(`Page ${pageNum} of ${totalPages}`, ML, 13, CW, 7, false, C.softText);
   page.textCenter(
     `${sanitize(responsible.name)}  |  ${sanitize(responsible.plant_name)}  |  ${week.replace("2026-Week","Week ")}`,
@@ -316,20 +415,32 @@ function sectionHead(ds, title) {
   ds.advance(10);
 }
 
-// ─── Cover block (compact — fits in ~160px) ──────────────────────────────────
+// ─── Cover block (compact — fits in ~190px) ──────────────────────────────────
 function buildCover(ds, data) {
-  // Blue hero banner — compact height
-  const bannerH = 80;
-  ds.need(bannerH + 70);
+  // Brand header: logo (text wordmark if the image is unavailable) on the
+  // left, product label on the right, brand bar underneath.
+  const logoH = 24;
+  ds.need(logoH + 150);
+  const top = ds.y();
+  if (ds.logo) {
+    ds.page.image("Logo", ML, top-logoH, logoH*ds.logo.width/ds.logo.height, logoH);
+  } else {
+    ds.page.text("AVOCarbon Group", ML, top-18, 16, true, C.blue);
+  }
+  ds.page.textRight("KPI MANAGER", ML, top-15, CW, 8, true, C.carbon);
+  ds.advance(logoH + 12);
+  drawBrandBar(ds.page, ML, ds.y()-3, CW, 3);
+  ds.advance(3 + 22);
 
-  const bY = ds.y() - bannerH;
-  ds.page.rect(ML, bY, CW, bannerH, C.blue);
-  ds.page.textCenter("KPI Performance Report",           ML, bY+bannerH-24, CW, 20, true,  C.white);
-  ds.page.textCenter("AI-Powered Strategic Recommendations", ML, bY+bannerH-44, CW, 11, false, "#cce5ff");
-  ds.page.textCenter(
+  // Title block (was a blue banner): eyebrow, title, then who / where / when.
+  ds.page.text("AI-POWERED STRATEGIC RECOMMENDATIONS", ML, ds.y(), 8, true, C.blue);
+  ds.advance(26);
+  ds.page.text("KPI Performance Report", ML, ds.y(), 22, true, C.darkText);
+  ds.advance(18);
+  ds.page.text(
     `${sanitize(data.responsible.name)}  |  ${sanitize(data.responsible.plant_name)}  |  ${data.week.replace("2026-Week","Week ")}`,
-    ML, bY+bannerH-58, CW, 10, false, "#b0d4f5");
-  ds.advance(bannerH + 6);
+    ML, ds.y(), 10, false, C.softText);
+  ds.advance(16);
 
   // Meta cards row
   const cardW = CW/4, cardH = 52;
@@ -431,12 +542,14 @@ function buildRecommendations(ds, data) {
   introLines.forEach(ln=>{ ds.page.text(ln, ML, ds.y(), 9, false, C.midText); ds.advance(13); });
   ds.advance(6);
 
+  // Card colors are brand, not status: neutral panels with an AVO blue
+  // accent; "Immediate Actions" (this week) gets the GROUP orange accent.
   const sections=[
-    {key:"root_cause",       label:"Root Cause Analysis",fill:C.lightRed,   border:C.red   },
-    {key:"immediate_actions",label:"Immediate Actions",  fill:C.lightOrange,border:C.orange},
-    {key:"medium_term_plan", label:"Medium-Term Plan",   fill:C.lightBlue,  border:C.blue  },
-    {key:"evidence_metrics", label:"Evidence & Metrics", fill:C.lightPurple,border:C.purple},
-    {key:"risk_mitigation",  label:"Risk Mitigation",    fill:C.lightGreen, border:C.green },
+    {key:"root_cause",       label:"Root Cause Analysis",fill:C.lightGray,  border:C.border,    accent:C.blue,   labelColor:C.darkBlue  },
+    {key:"immediate_actions",label:"Immediate Actions",  fill:C.lightOrange,border:C.orangeSoft,accent:C.orange, labelColor:C.orangeText},
+    {key:"medium_term_plan", label:"Medium-Term Plan",   fill:C.lightGray,  border:C.border,    accent:C.blue,   labelColor:C.darkBlue  },
+    {key:"evidence_metrics", label:"Evidence & Metrics", fill:C.lightGray,  border:C.border,    accent:C.blue,   labelColor:C.darkBlue  },
+    {key:"risk_mitigation",  label:"Risk Mitigation",    fill:C.lightGray,  border:C.border,    accent:C.blue,   labelColor:C.darkBlue  },
   ];
 
   recs.forEach((rec, recIdx) => {
@@ -447,7 +560,7 @@ function buildRecommendations(ds, data) {
     const titleH=22;
     ds.need(titleH + 42);
     const tY=ds.y()-titleH;
-    ds.page.rectFillStroke(ML, tY, CW, titleH, si.bg, si.color, 0.8);
+    ds.page.rectFillStroke(ML, tY, CW, titleH, si.bg, si.border, 0.8);
     ds.page.text(`${recIdx+1}. ${sanitize(rec.kpi_name)}`, ML+8, tY+7, 11, true, C.darkText);
     const bW2=82, bH2=13;
     ds.page.rect(ML+CW-bW2-6, tY+4, bW2, bH2, si.color);
@@ -471,7 +584,8 @@ function buildRecommendations(ds, data) {
     ds.need(statH+4);
     const statLabels=["CURRENT VALUE","LOW LIMIT","HIGH LIMIT","TARGET"];
     const statVals  =[fmtVal(rec.current_value,unit),fmtVal(rec.low_limit,unit),fmtVal(rec.high_limit,unit),fmtVal(rec.target,unit)];
-    const statColors=[si.color, C.red, C.orange, C.green];
+    // Only the current value carries a status; limits and target are plain values.
+    const statColors=[si.color, C.darkText, C.darkText, C.darkText];
     statLabels.forEach((lbl,i)=>{
       const sx=ML+i*statW, sy=ds.y()-statH;
       ds.page.rectFillStroke(sx, sy, statW, statH, i%2===0?C.lightGray:C.white, C.border, 0.3);
@@ -481,16 +595,16 @@ function buildRecommendations(ds, data) {
     ds.advance(statH+4);
 
     // Recommendation cards
-    sections.forEach(({key,label,fill,border})=>{
+    sections.forEach(({key,label,fill,border,accent,labelColor})=>{
       const txt=(rec[key]||"").trim(); if(!txt) return;
       const cardLines=wrapText(sanitize(txt), CW-18, 9, false);
       const cardH=14+cardLines.length*13+8;
       ds.need(cardH+2);
       const cy=ds.y()-cardH;
-      ds.page.rect(ML, cy, 3, cardH, border);
       ds.page.rect(ML+3, cy, CW-3, cardH, fill);
       ds.page.rectStroke(ML, cy, CW, cardH, border, 0.4);
-      ds.page.text(label, ML+9, cy+cardH-12, 9, true, border);
+      ds.page.rect(ML, cy, 3, cardH, accent);
+      ds.page.text(label, ML+9, cy+cardH-12, 9, true, labelColor);
       cardLines.forEach((ln,li)=>{
         ds.page.text(ln, ML+9, cy+cardH-24-li*13, 9, false, C.midText);
       });
@@ -547,14 +661,14 @@ function buildStrategicOverview(ds, data) {
   const watch   =data.kpis.filter(k=>k.status==="Near Limit").length;
   const good    =data.kpis.length-critical-watch;
   const matCols=[
-    {label:"CRITICAL",value:critical,fill:C.lightRed,   color:C.red,   desc:"Below low limit"},
-    {label:"WATCH",   value:watch,   fill:C.lightOrange,color:C.orange,desc:"Near low limit" },
-    {label:"ON TRACK",value:good,    fill:C.lightGreen, color:C.green, desc:"Above low limit"},
+    {label:"CRITICAL",value:critical,fill:C.lightRed,   stroke:C.redSoft,   color:C.red,   desc:"Below low limit"},
+    {label:"WATCH",   value:watch,   fill:C.lightAmber, stroke:C.amberSoft, color:C.amber, desc:"Near low limit" },
+    {label:"ON TRACK",value:good,    fill:C.lightGreen, stroke:C.greenSoft, color:C.green, desc:"Above low limit"},
   ];
   const matY=ds.y()-matH;
   matCols.forEach((col,i)=>{
     const mx=ML+i*matW;
-    ds.page.rectFillStroke(mx, matY, matW, matH, col.fill, C.border, 0.4);
+    ds.page.rectFillStroke(mx, matY, matW, matH, col.fill, col.stroke, 0.4);
     ds.page.textCenter(col.label, mx, matY+matH-13, matW, 9, true, col.color);
     ds.page.textCenter(String(col.value), mx, matY+28,    matW, 26, true, col.color);
     ds.page.textCenter(col.desc,         mx, matY+8,      matW, 7, false, C.softText);
@@ -565,10 +679,13 @@ function buildStrategicOverview(ds, data) {
 // ─── Main export ──────────────────────────────────────────────────────────────
 function generateKPIPdf(data) {
   const writer = new PDFWriter();
-  const resourcesId = writer.writeResources();
+  const logo = loadLogoImage();
+  const logoImageId = logo ? writer.writeImage(logo) : null;
+  const resourcesId = writer.writeResources(logoImageId);
 
   // Build all content into DocState (continuous flow)
   const ds = new DocState(data.week, data.responsible);
+  ds.logo = logoImageId ? logo : null;
 
   buildCover(ds, data);
   buildSummaryTable(ds, data);

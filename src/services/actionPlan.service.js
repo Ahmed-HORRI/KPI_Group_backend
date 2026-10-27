@@ -20,6 +20,13 @@ const {
 } = require("../utils/weekPeriod");
 const { loadFormResponsibleContext } = require("../models/responsible.model");
 const {
+  BRAND,
+  FONT,
+  renderEmailHeader,
+  renderEmailFooter,
+  renderEmailButton,
+} = require("../config/brand");
+const {
   getCanonicalKpiSubmissionFrequency,
   getCanonicalKpiCalculationMode,
   formatKpiSubmissionPeriodLabel,
@@ -782,43 +789,110 @@ const generateEmailHtml = ({
   const responsiblePlant = escapeHtml(
     normalizeOptionalTextInput(responsible?.plant_name) || "Allocated scope"
   );
+  const escapedFormUrl = escapeHtml(formUrl);
+  const escapedPeriodLabel = escapeHtml(periodLabel);
 
-  return `
-  <!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Form</title></head>
-  <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;margin:0;">
-    <div style="max-width:600px;margin:0 auto;background:#fff;padding:30px 25px 40px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
-      
-      <!-- Logo -->
-      <div style="margin-bottom:10px;">
-        <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0"
-             alt="AVOCarbon Logo" style="width:90px;height:90px;object-fit:contain;">
-      </div>
-      
-      <!-- KPI group with cadre/border - directly under logo and centered -->
-      <div style="border:2px solid #0078D7;border-radius:8px;padding:6px 25px;display:inline-block;margin:0 auto 15px auto;">
-        <span style="color:#0078D7;font-size:16px;font-weight:500;display:inline-block;">KPI Group</span>
-      </div>
-      
-      <h2 style="color:#0078D7;font-size:24px;margin:0 0 10px 0;font-weight:600;">KPI Submission </h2>
-      ${normalizedCalculationMode
-      ? `<p style="margin:0 0 6px 0;color:#0f4c81;font-size:14px;font-weight:600;">Calculation Mode: ${escapeHtml(normalizedCalculationMode)}</p>`
-      : ""}
-      ${normalizedFrequencyLabel
-      ? `<p style="margin:0 0 14px 0;color:#0f4c81;font-size:14px;font-weight:600;">Frequency: ${escapeHtml(normalizedFrequencyLabel)}</p>`
-      : ""}
-      
-      <h3 style="color:#333;font-size:18px;margin:0 0 25px 0;font-weight:500;">${responsiblePlant}</h3>
-      
-      <a href="${escapeHtml(formUrl)}"
-         style="display:inline-block;padding:14px 35px;background:#0078D7;color:white;
-                border-radius:50px;text-decoration:none;font-weight:600;font-size:16px;
-                margin-bottom:20px;border:none;cursor:pointer;">
-        Fill KPI Form
-      </a>
-      
-      <p style="margin:0;font-size:13px;color:#666;">Click the button above to fill your KPIs for ${escapeHtml(periodLabel)}.</p>
-    </div>
-  </body></html>`;
+  // Calculation mode / frequency, as label / value rows in a light panel.
+  const detailRows = [
+    normalizedCalculationMode ? ["Calculation Mode", escapeHtml(normalizedCalculationMode)] : null,
+    normalizedFrequencyLabel ? ["Frequency", escapeHtml(normalizedFrequencyLabel)] : null
+  ].filter(Boolean);
+  const detailsHtml = detailRows.length
+    ? `
+          <tr>
+            <td style="padding:22px 36px 0;">
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.panel}"
+                     style="background:${BRAND.panel};border:1px solid ${BRAND.line};border-radius:12px;">
+                ${detailRows.map(([label, value], index) => `
+                <tr>
+                  <td valign="top" width="150"
+                      style="padding:${index === 0 ? "16px" : "10px"} 20px ${index === detailRows.length - 1 ? "16px" : "0"};font-family:${FONT};font-size:12px;line-height:18px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:${BRAND.muted};">
+                    ${label}
+                  </td>
+                  <td valign="top"
+                      style="padding:${index === 0 ? "16px" : "10px"} 20px ${index === detailRows.length - 1 ? "16px" : "0"} 0;font-family:${FONT};font-size:14px;line-height:18px;font-weight:600;color:${BRAND.ink};">
+                    ${value}
+                  </td>
+                </tr>`).join("")}
+              </table>
+            </td>
+          </tr>`
+    : "";
+
+  // Outlook-first layout (tables, inline styles, bgcolor), AVOCarbon charter:
+  // brand header with the inline logo (cid: attachment added by sendKPIEmail),
+  // AVO blue button, brand footer.
+  return `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>KPI Form</title>
+  <!--[if mso]><style>table,td,div,p,a{font-family:Arial,sans-serif !important;}</style><![endif]-->
+</head>
+<body style="margin:0;padding:0;background:${BRAND.page};">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;font-size:1px;line-height:1px;color:${BRAND.page};">
+    Fill your KPIs for ${escapedPeriodLabel}.
+  </div>
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.page}" style="background:${BRAND.page};">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+        <!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0"><tr><td><![endif]-->
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+               style="max-width:600px;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
+          <tr>
+            <td style="padding:0;">${renderEmailHeader({ radius: 12 })}</td>
+          </tr>
+          <tr>
+            <td style="padding:30px 36px 0;">
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td bgcolor="${BRAND.blueTint}"
+                      style="padding:5px 12px;border-radius:999px;background:${BRAND.blueTint};font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:0.8px;color:${BRAND.blueDark};text-transform:uppercase;">
+                    ${escapedPeriodLabel}
+                  </td>
+                </tr>
+              </table>
+              <h1 style="margin:14px 0 0;font-family:${FONT};font-size:26px;line-height:32px;font-weight:800;color:${BRAND.ink};">
+                KPI Submission
+              </h1>
+              <p style="margin:8px 0 0;font-family:${FONT};font-size:16px;line-height:24px;font-weight:600;color:${BRAND.text};">
+                ${responsiblePlant}
+              </p>
+            </td>
+          </tr>
+          ${detailsHtml}
+          <tr>
+            <td style="padding:28px 36px 0;">
+              ${renderEmailButton({ label: "Fill KPI Form", href: escapedFormUrl })}
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:16px 36px 0;font-family:${FONT};font-size:13px;line-height:20px;color:${BRAND.muted};">
+              Click the button above to fill your KPIs for ${escapedPeriodLabel}.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:22px 36px 0;">
+              <p style="margin:0;font-family:${FONT};font-size:12px;line-height:19px;color:${BRAND.muted};">
+                Button not working? Copy this address into your browser:
+              </p>
+              <p style="margin:6px 0 0;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:18px;word-break:break-all;">
+                <a href="${escapedFormUrl}" target="_blank" style="color:${BRAND.blue};text-decoration:underline;">${escapedFormUrl}</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:6px 4px 0;">${renderEmailFooter({ signature: "AVOCarbon Group &middot; KPI Manager &middot; This is an automated message." })}</td>
+          </tr>
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 };
 
 // ============================================================

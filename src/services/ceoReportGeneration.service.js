@@ -52,6 +52,39 @@ const {
   escapeWeeklyReportText,
   formatWeeklyReportWeekLabel,
 } = require("./kpiSubmissionEmail.service");
+// AVOCarbon graphic charter (pure module): colors, e-mail header/footer, logo.
+const {
+  BRAND,
+  STATUS,
+  FONT,
+  withLogoAttachment,
+  renderEmailHeader,
+  renderEmailFooter,
+  renderEmailButton,
+  BRAND_PAGE_CSS,
+  renderPageHeader,
+} = require("../config/brand");
+
+// Title block under the brand header of the report e-mails: an optional small
+// uppercase eyebrow in AVO blue, an ink heading, a meta line and a muted
+// detail line. The values must already be HTML-escaped.
+const renderReportTitleBlock = ({ eyebrow = "", title, meta = "", detail = "" }) => `
+                ${eyebrow ? `<div style="margin:0 0 6px;font-family:${FONT};font-size:11px;line-height:16px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:${BRAND.blue};">${eyebrow}</div>` : ""}
+                <h1 style="margin:0;font-family:${FONT};font-size:24px;line-height:30px;font-weight:800;color:${BRAND.ink};">
+                  ${title}
+                </h1>
+                ${meta ? `<div style="margin:8px 0 0;font-family:${FONT};font-size:14px;line-height:21px;color:${BRAND.text};">${meta}</div>` : ""}
+                ${detail ? `<div style="margin:4px 0 0;font-family:${FONT};font-size:12px;line-height:18px;color:${BRAND.muted};">${detail}</div>` : ""}`;
+
+// Flat notice panel (Outlook-safe): tinted background, hairline border and a
+// 4px colored left edge.
+const renderReportNotice = (html, { background, border, accent, color = BRAND.text }) => `
+                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${background}"
+                       style="width:100%;background:${background};border:1px solid ${border};border-left:4px solid ${accent};border-radius:8px;">
+                  <tr>
+                    <td style="padding:12px 16px;font-family:${FONT};font-size:13px;line-height:20px;color:${color};">${html}</td>
+                  </tr>
+                </table>`;
 
 function getCurrentWeek(date = new Date()) {
   const now = new Date(date);
@@ -162,16 +195,16 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
 
       if (omittedChartsCount > 0) {
         chartsHtml += `
-          <div style="margin:16px 0 0;padding:16px 18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;color:#1e3a8a;font-size:13px;line-height:1.5;">
+          <div style="margin:16px 0 0;padding:14px 18px;background:${BRAND.blueTint};border:1px solid ${BRAND.blueSoft};border-radius:8px;font-family:${FONT};color:${BRAND.blueDark};font-size:13px;line-height:1.5;">
             ${escapeWeeklyReportText(`${omittedChartsCount} additional KPI chart(s) are available in the dashboard to keep this email lightweight and reliable.`, 180)}
           </div>`;
       }
     } else {
       reportWarnings.push("No KPI chart data was available for this report period.");
       chartsHtml = `
-        <div style="text-align:center;padding:60px;background:#ffffff;border:1px solid #dbe4ef;border-radius:16px;">
-          <p style="color:#334155;margin:0;font-size:18px;font-weight:700;">No KPI Data Available</p>
-          <p style="color:#64748b;margin:10px 0 0;font-size:13px;">Use the dashboard link below to review the current allocation scope.</p>
+        <div style="text-align:center;padding:60px;background:${BRAND.panel};border:1px solid ${BRAND.line};border-radius:12px;font-family:${FONT};">
+          <p style="color:${BRAND.ink};margin:0;font-size:18px;font-weight:700;">No KPI Data Available</p>
+          <p style="color:${BRAND.muted};margin:10px 0 0;font-size:13px;">Use the dashboard link below to review the current allocation scope.</p>
         </div>`;
     }
 
@@ -213,11 +246,16 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
     const pdfBannerHtml = pdfAttachment
       ? `<strong>AI Recommendations PDF is attached</strong> - open it for root-cause analysis, action plans and improvement roadmaps for each KPI.`
       : `<strong>AI Recommendations PDF is unavailable for this run</strong> - use the dashboard for the latest analysis while the report remains available in this email.`;
+    // PDF banner: GROUP orange accent when the PDF is attached, warning colors
+    // when it is missing.
+    const pdfBannerColors = pdfAttachment
+      ? { background: BRAND.orangeTint, border: BRAND.orangeSoft, accent: BRAND.orange }
+      : { background: STATUS.warningTint, border: STATUS.warningSoft, accent: STATUS.warning, color: STATUS.warningText };
     const managerCopyHtml = isManagerCopy
       ? `
         <tr>
-          <td style="padding:14px 32px 0;">
-            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 14px;color:#1d4ed8;font-size:12px;line-height:1.5;">
+          <td style="padding:14px 30px 0;">
+            <div style="background:${BRAND.blueTint};border:1px solid ${BRAND.blueSoft};border-radius:8px;padding:12px 14px;font-family:${FONT};color:${BRAND.blueDark};font-size:12px;line-height:1.5;">
               This manager copy was sent to <strong>${escapeWeeklyReportText(deliveryRecipientName, 80)}</strong>${deliveryRoleName ? ` (${escapeWeeklyReportText(deliveryRoleName, 80)})` : ""} for KPI follow-up on <strong>${escapeWeeklyReportText(responsible.name, 80)}</strong>.
             </div>
           </td>
@@ -227,8 +265,8 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
     const reportWarningsHtml = reportWarnings.length
       ? `
         <tr>
-          <td style="padding:14px 32px 0;">
-            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px 14px;color:#9a3412;font-size:12px;line-height:1.5;">
+          <td style="padding:14px 30px 0;">
+            <div style="background:${STATUS.warningTint};border:1px solid ${STATUS.warningSoft};border-radius:8px;padding:12px 14px;font-family:${FONT};color:${STATUS.warningText};font-size:12px;line-height:1.5;">
               ${reportWarnings.map((warning) => escapeWeeklyReportText(warning, 200)).join("<br />")}
             </div>
           </td>
@@ -265,29 +303,30 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
   </head>
-  <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#edf3fb;color:#0f172a;">
-    <div style="display:none;font-size:1px;color:#edf3fb;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+  <body style="margin:0;padding:0;font-family:${FONT};background:${BRAND.page};color:${BRAND.text};">
+    <div style="display:none;font-size:1px;color:${BRAND.page};line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
       KPI Performance Report ${escapeWeeklyReportText(reportWeekLabel, 40)} for ${escapeWeeklyReportText(responsible.name, 80)}.
     </div>
-    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#edf3fb;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.page}" style="background:${BRAND.page};">
       <tr>
         <td align="center" style="padding:28px 18px;">
-          <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:1040px;background:#f8fbff;border-radius:18px;">
+          <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+                 style="max-width:1040px;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
             <tr>
-              <td style="padding:30px 30px 22px;">
-                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#127bd8;border-radius:10px;">
+              <td style="padding:0;">${renderEmailHeader({ label: "Weekly KPI report", radius: 12 })}</td>
+            </tr>
+            <tr>
+              <td style="padding:28px 30px 22px;">
+                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
                   <tr>
-                    <td align="center" style="padding:26px 20px;">
-                      <div style="font-size:20px;font-weight:700;color:#ffffff;line-height:1.25;margin:0 0 8px;">
-                        KPI Performance Report
-                      </div>
-                      <div style="font-size:14px;color:#e0f2fe;line-height:1.5;margin:0 0 14px;">
-                        ${escapeWeeklyReportText(reportWeekLabel, 40)} | ${escapeWeeklyReportText(responsible.name, 80)} | ${escapeWeeklyReportText(responsible.plant_name, 80)}
-                      </div>
-                      <a href="${escapeHtml(dashboardUrl)}"
-                         style="display:inline-block;padding:11px 24px;background:#38bdf8;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:700;">
-                        View Dashboard
-                      </a>
+                    <td valign="middle">
+                      ${renderReportTitleBlock({
+                        title: "KPI Performance Report",
+                        meta: `${escapeWeeklyReportText(reportWeekLabel, 40)} | ${escapeWeeklyReportText(responsible.name, 80)} | ${escapeWeeklyReportText(responsible.plant_name, 80)}`
+                      })}
+                    </td>
+                    <td valign="middle" align="right" width="230" style="padding-left:16px;">
+                      ${renderEmailButton({ label: "View Dashboard", href: escapeHtml(dashboardUrl), width: 200 })}
                     </td>
                   </tr>
                 </table>
@@ -296,9 +335,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
 
             <tr>
               <td style="padding:0 30px;">
-                <div style="background:#fff8e1;border:1px solid #f6d365;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.5;color:#7c4a03;">
-                  ${pdfBannerHtml}
-                </div>
+                ${renderReportNotice(pdfBannerHtml, pdfBannerColors)}
               </td>
             </tr>
 
@@ -306,14 +343,14 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
             ${reportWarningsHtml}
 
             <tr>
-              <td style="padding:16px 30px 30px;">
+              <td style="padding:16px 30px 8px;">
                 ${chartsHtml}
               </td>
             </tr>
 
             <tr>
-              <td style="padding:18px 24px 26px;text-align:center;font-size:12px;color:#64748b;border-top:1px solid #dbe4ef;">
-                AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}
+              <td style="padding:0;">
+                ${renderEmailFooter({ note: `AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}` })}
               </td>
             </tr>
           </table>
@@ -326,36 +363,37 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
     const fallbackHtml = `<!DOCTYPE html>
 <html>
   <head><meta charset="utf-8"></head>
-  <body style="margin:0;padding:24px;font-family:Arial,sans-serif;background:#f4f6f9;color:#0f172a;">
-    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #dbe4ef;border-radius:14px;">
+  <body style="margin:0;padding:24px;font-family:${FONT};background:${BRAND.page};color:${BRAND.text};">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+           style="max-width:760px;margin:0 auto;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
       <tr>
-        <td style="padding:26px 28px 18px;background:#127bd8;border-radius:14px 14px 0 0;text-align:center;">
-          <div style="font-size:22px;font-weight:700;color:#ffffff;">KPI Performance Report</div>
-          <div style="margin-top:8px;font-size:14px;color:#e0f2fe;">
-            ${escapeWeeklyReportText(reportWeekLabel, 40)} | ${escapeWeeklyReportText(responsible.name, 80)} | ${escapeWeeklyReportText(responsible.plant_name, 80)}
-          </div>
+        <td style="padding:0;">${renderEmailHeader({ label: "Weekly KPI report", radius: 12 })}</td>
+      </tr>
+      <tr>
+        <td style="padding:26px 28px 0;">
+          ${renderReportTitleBlock({
+            title: "KPI Performance Report",
+            meta: `${escapeWeeklyReportText(reportWeekLabel, 40)} | ${escapeWeeklyReportText(responsible.name, 80)} | ${escapeWeeklyReportText(responsible.plant_name, 80)}`
+          })}
         </td>
       </tr>
       <tr>
-        <td style="padding:22px 28px;">
+        <td style="padding:20px 28px 0;font-family:${FONT};color:${BRAND.text};">
           <p style="margin:0 0 16px;font-size:14px;line-height:1.6;">
             Your weekly KPI report is available. Open the dashboard for the full chart experience.
           </p>
           <p style="margin:0 0 16px;font-size:14px;line-height:1.6;">
             Included KPI summary: ${escapeWeeklyReportText(chartsForEmail.map((chart) => chart.title || chart.subtitle || "KPI").join(", ") || "No KPI data available", 260)}
           </p>
-          <p style="margin:0 0 20px;font-size:14px;line-height:1.6;">
+          <p style="margin:0 0 22px;font-size:14px;line-height:1.6;">
             ${escapeWeeklyReportText(pdfAttachment ? "The AI recommendations PDF is attached to this message." : "The AI recommendations PDF was not available in this run.", 160)}
           </p>
-          <a href="${escapeHtml(dashboardUrl)}"
-             style="display:inline-block;padding:12px 22px;background:#127bd8;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:700;">
-            View Dashboard
-          </a>
+          ${renderEmailButton({ label: "View Dashboard", href: escapeHtml(dashboardUrl), width: 200 })}
         </td>
       </tr>
       <tr>
-        <td style="padding:16px 28px 22px;font-size:12px;color:#64748b;border-top:1px solid #dbe4ef;text-align:center;">
-          AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}
+        <td style="padding:8px 0 0;">
+          ${renderEmailFooter({ note: `AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}` })}
         </td>
       </tr>
     </table>
@@ -406,7 +444,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
         ...baseMailOptions,
         to: deliveryRecipient,
         html: emailHtml,
-        attachments
+        attachments: withLogoAttachment(attachments)
       });
     } catch (primarySendError) {
       fallbackUsed = true;
@@ -418,10 +456,10 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek, deliveryOver
         to: deliveryRecipient,
         subject: `${baseMailOptions.subject} [Fallback]`,
         html: fallbackHtml,
-        attachments: pdfAttachment ? [{
+        attachments: withLogoAttachment(pdfAttachment ? [{
           ...pdfAttachment,
           contentDisposition: "attachment"
-        }] : [],
+        }] : []),
         headers: {
           ...baseMailOptions.headers,
           "X-Weekly-Report-Fallback": "1"
@@ -660,8 +698,8 @@ const createIndividualKPIChart = (kpi) => {
 
   if (!values || values.length === 0) {
     return `<table border="0" cellpadding="15" cellspacing="0" width="100%"
-              style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px;">
-      <tr><td style="text-align:center;color:#999;font-size:14px;padding:20px;">
+              style="background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:10px;margin-bottom:15px;">
+      <tr><td style="text-align:center;font-family:${FONT};color:${BRAND.muted};font-size:14px;padding:20px;">
         <div>No data for ${kpi.subtitle || kpi.title}</div>
       </td></tr></table>`;
   }
@@ -679,7 +717,7 @@ const createIndividualKPIChart = (kpi) => {
   const currentValue = values[values.length - 1];
 
   const currentStatus = getKpiStatus(currentValue, low_limit, high_limit, direction);
-  const trendColor = currentStatus.isGood === false ? '#dc2626' : '#22c55e';
+  const trendColor = currentStatus.isGood === false ? STATUS.critical : STATUS.good;
 
   const statusArrow = currentStatus.isGood === false
     ? (direction === 'down' ? '\u2197' : '\u2198')
@@ -689,8 +727,8 @@ const createIndividualKPIChart = (kpi) => {
 
   const pointColors = values.map((v) =>
     getKpiStatus(v, low_limit, high_limit, direction).isGood === false
-      ? '#dc2626'
-      : '#22c55e'
+      ? STATUS.critical
+      : STATUS.good
   );
 
   const weekLabels = weeks.map(w =>
@@ -700,11 +738,14 @@ const createIndividualKPIChart = (kpi) => {
   );
 
 
+  // Same chart colors as the frontend: points keep their good/bad status
+  // colors, the line joining them is Carbon gray, the target line AVO blue and
+  // both limit lines dashed GROUP orange.
   const datasets = [
     {
       label: (kpi.subtitle || kpi.title || '').substring(0, 40),
       data: values,
-      borderColor: '#94a3b8',
+      borderColor: BRAND.gray,
       borderWidth: 2,
       lineTension: 0,
       pointBackgroundColor: pointColors,
@@ -720,7 +761,7 @@ const createIndividualKPIChart = (kpi) => {
     datasets.push({
       label: `High Limit (${fmt(high_limit)})`,
       data: new Array(values.length).fill(displayHigh),
-      borderColor: '#f97316', borderWidth: 2, borderDash: [6, 4],
+      borderColor: BRAND.orange, borderWidth: 2, borderDash: [6, 4],
       lineTension: 0, pointRadius: 0, fill: false
     });
   }
@@ -729,7 +770,7 @@ const createIndividualKPIChart = (kpi) => {
     datasets.push({
       label: `Target (${fmt(target)})`,
       data: new Array(values.length).fill(displayTarget),
-      borderColor: '#16a34a', borderWidth: 2.25,
+      borderColor: BRAND.blue, borderWidth: 2.25,
       lineTension: 0, pointRadius: 0, fill: false
     });
   }
@@ -738,7 +779,7 @@ const createIndividualKPIChart = (kpi) => {
     datasets.push({
       label: `Low Limit (${fmt(low_limit)})`,
       data: new Array(values.length).fill(displayLow),
-      borderColor: '#dc2626', borderWidth: 2, borderDash: [6, 4],
+      borderColor: BRAND.orange, borderWidth: 2, borderDash: [6, 4],
       lineTension: 0, pointRadius: 0, fill: false
     });
   }
@@ -749,15 +790,16 @@ const createIndividualKPIChart = (kpi) => {
     options: {
       legend: { display: false },
       scales: {
-        xAxes: [{ ticks: { fontSize: 10 }, gridLines: { color: 'rgba(0,0,0,0.05)' } }],
+        xAxes: [{ ticks: { fontSize: 10, fontColor: BRAND.muted }, gridLines: { color: BRAND.line } }],
         yAxes: [{
           ticks: {
             fontSize: 10,
+            fontColor: BRAND.muted,
             beginAtZero: false,
             min: axisRange.min,
             max: axisRange.max
           },
-          gridLines: { color: 'rgba(0,0,0,0.05)' }
+          gridLines: { color: BRAND.line }
         }]
       }
     }
@@ -767,22 +809,23 @@ const createIndividualKPIChart = (kpi) => {
     `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}` +
     `&w=320&h=170&bkg=white`;
 
+  // Threshold badges match their chart lines: target AVO blue, limits GROUP orange.
   const badges = `
-    <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin-top:10px;">
+    <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin-top:10px;font-family:${FONT};">
       <tr>
         <td align="center" width="33%">${target !== null
-      ? `<div style="background:#e8f5e9;color:#2e7d32;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #a5d6a7;display:inline-block;">Target: ${target}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">Target: N/A</div>`}</td>
+      ? `<div style="background:${BRAND.blueTint};color:${BRAND.blueDark};padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid ${BRAND.blueSoft};display:inline-block;">Target: ${target}</div>`
+      : `<div style="background:${BRAND.panel};color:${BRAND.muted};padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid ${BRAND.line};display:inline-block;">Target: N/A</div>`}</td>
         <td align="center" width="33%">${high_limit !== null
-      ? `<div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">High Limit: ${high_limit}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">High Limit: N/A</div>`}</td>
+      ? `<div style="background:${BRAND.orangeTint};color:${BRAND.orangeText};padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid ${BRAND.orangeSoft};display:inline-block;">High Limit: ${high_limit}</div>`
+      : `<div style="background:${BRAND.panel};color:${BRAND.muted};padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid ${BRAND.line};display:inline-block;">High Limit: N/A</div>`}</td>
         <td align="center" width="33%">${low_limit !== null
-      ? `<div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">Low Limit: ${low_limit}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">Low Limit: N/A</div>`}</td>
+      ? `<div style="background:${BRAND.orangeTint};color:${BRAND.orangeText};padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid ${BRAND.orangeSoft};display:inline-block;">Low Limit: ${low_limit}</div>`
+      : `<div style="background:${BRAND.panel};color:${BRAND.muted};padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid ${BRAND.line};display:inline-block;">Low Limit: N/A</div>`}</td>
       </tr>
     </table>`;
   const thresholdReadabilityNote = thresholdLineValues.hasTightCluster ? `
-    <div style="margin-top:8px;text-align:center;font-size:10px;color:#64748b;line-height:1.4;">
+    <div style="margin-top:8px;text-align:center;font-family:${FONT};font-size:10px;color:${BRAND.muted};line-height:1.4;">
       Threshold lines are slightly spaced in the chart for readability. Exact values are shown above.
     </div>
   ` : '';
@@ -806,50 +849,50 @@ const createIndividualKPIChart = (kpi) => {
   const caStatusBadge = hasCA && kpi.correctiveAction.status ? `
     <span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;
                  border-radius:10px;margin-left:6px;
-                 background:${kpi.correctiveAction.status === 'Waiting for validation' ? '#fff3e0' : '#ffebee'};
-                 color:${kpi.correctiveAction.status === 'Waiting for validation' ? '#e65100' : '#c62828'};
-                 border:1px solid ${kpi.correctiveAction.status === 'Waiting for validation' ? '#ffcc80' : '#ef9a9a'};">
+                 background:${kpi.correctiveAction.status === 'Waiting for validation' ? STATUS.warningTint : STATUS.criticalTint};
+                 color:${kpi.correctiveAction.status === 'Waiting for validation' ? STATUS.warningText : STATUS.criticalText};
+                 border:1px solid ${kpi.correctiveAction.status === 'Waiting for validation' ? STATUS.warningSoft : STATUS.criticalSoft};">
       ${kpi.correctiveAction.status}
     </span>` : '';
 
   const rightColumn = hasSide ? `
     <td width="${rightWidth}" valign="top"
         style="padding:18px 16px 18px 20px;
-               border-left:3px solid #e2e8f0;
-               background:#f8fafc;
-               border-radius:0 8px 8px 0;">
+               border-left:3px solid ${BRAND.line};
+               background:${BRAND.panel};
+               border-radius:0 8px 8px 0;font-family:${FONT};">
 
       ${hasComments ? `
       <div style="margin-bottom:${hasCA ? '14px' : '0'};">
-        <div style="font-size:11px;font-weight:700;color:#0078D7;
+        <div style="font-size:11px;font-weight:700;color:${BRAND.blue};
                     margin-bottom:10px;padding-bottom:6px;
-                    border-bottom:1px solid #bfdbfe;letter-spacing:0.4px;">
+                    border-bottom:1px solid ${BRAND.blueSoft};letter-spacing:0.4px;">
           COMMENTS
         </div>
         ${kpi.comments.map(c => `
           <table border="0" cellpadding="10" cellspacing="0" width="100%"
-                 style="background:#eff6ff;border-radius:8px;
-                        border-left:4px solid #3b82f6;margin-bottom:8px;">
-            <tr><td style="font-size:10px;font-weight:800;color:#1d4ed8;
+                 style="background:${BRAND.blueTint};border-radius:8px;
+                        border-left:4px solid ${BRAND.blue};margin-bottom:8px;">
+            <tr><td style="font-size:10px;font-weight:800;color:${BRAND.blueDark};
                            text-transform:uppercase;letter-spacing:0.5px;
                            padding-bottom:4px;">
               ${weekToMonthLabel(c.week || '') || (c.week || '').replace('2026-Week', 'Week ')}
             </td></tr>
-            <tr><td style="font-size:12px;color:#1e3a5f;line-height:1.5;">${c.text}</td></tr>
+            <tr><td style="font-size:12px;color:${BRAND.text};line-height:1.5;">${c.text}</td></tr>
           </table>`).join('')}
       </div>` : ''}
 
       ${hasCA ? `
       <div>
-        <div style="font-size:11px;font-weight:700;color:#c62828;
+        <div style="font-size:11px;font-weight:700;color:${STATUS.criticalText};
                     margin-bottom:10px;padding-bottom:6px;
-                    border-bottom:1px solid #fecaca;letter-spacing:0.4px;
+                    border-bottom:1px solid ${STATUS.criticalSoft};letter-spacing:0.4px;
                     display:flex;align-items:center;">
           CORRECTIVE ACTION ${caStatusBadge}
         </div>
 
         ${correctiveActionWeekLabel ? `
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;
+        <div style="font-size:10px;font-weight:700;color:${BRAND.muted};text-transform:uppercase;
                     letter-spacing:0.08em;margin:0 0 8px;">
           Action Week: ${correctiveActionWeekLabel}
         </div>` : ''}
@@ -857,13 +900,13 @@ const createIndividualKPIChart = (kpi) => {
         ${kpi.correctiveAction.rootCause ? `
         <table border="0" cellpadding="0" cellspacing="0" width="100%"
                style="margin-bottom:8px;">
-          <tr><td style="padding:8px 10px;background:#fff5f5;border-radius:6px;
-                         border-left:3px solid #ef4444;">
-            <div style="font-size:9px;font-weight:800;color:#dc2626;
+          <tr><td style="padding:8px 10px;background:${STATUS.criticalTint};border-radius:6px;
+                         border-left:3px solid ${STATUS.critical};">
+            <div style="font-size:9px;font-weight:800;color:${STATUS.criticalText};
                         text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
               Root Cause
             </div>
-            <div style="font-size:11px;color:#374151;line-height:1.5;">
+            <div style="font-size:11px;color:${BRAND.text};line-height:1.5;">
               ${kpi.correctiveAction.rootCause}
             </div>
           </td></tr>
@@ -872,13 +915,13 @@ const createIndividualKPIChart = (kpi) => {
         ${kpi.correctiveAction.implementedSolution ? `
         <table border="0" cellpadding="0" cellspacing="0" width="100%"
                style="margin-bottom:8px;">
-          <tr><td style="padding:8px 10px;background:#fffbeb;border-radius:6px;
-                         border-left:3px solid #f59e0b;">
-            <div style="font-size:9px;font-weight:800;color:#d97706;
+          <tr><td style="padding:8px 10px;background:${BRAND.orangeTint};border-radius:6px;
+                         border-left:3px solid ${BRAND.orange};">
+            <div style="font-size:9px;font-weight:800;color:${BRAND.orangeText};
                         text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
               Implemented Solution
             </div>
-            <div style="font-size:11px;color:#374151;line-height:1.5;">
+            <div style="font-size:11px;color:${BRAND.text};line-height:1.5;">
               ${kpi.correctiveAction.implementedSolution}
             </div>
           </td></tr>
@@ -887,13 +930,13 @@ const createIndividualKPIChart = (kpi) => {
         ${correctiveActionDueDate ? `
         <table border="0" cellpadding="0" cellspacing="0" width="100%"
                style="margin-bottom:8px;">
-          <tr><td style="padding:8px 10px;background:#f5f3ff;border-radius:6px;
-                         border-left:3px solid #7c3aed;">
-            <div style="font-size:9px;font-weight:800;color:#6d28d9;
+          <tr><td style="padding:8px 10px;background:${BRAND.blueTint};border-radius:6px;
+                         border-left:3px solid ${BRAND.blue};">
+            <div style="font-size:9px;font-weight:800;color:${BRAND.blueDark};
                         text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
               Due Date
             </div>
-            <div style="font-size:11px;color:#374151;line-height:1.5;">
+            <div style="font-size:11px;color:${BRAND.text};line-height:1.5;">
               ${correctiveActionDueDate}
             </div>
           </td></tr>
@@ -905,29 +948,29 @@ const createIndividualKPIChart = (kpi) => {
 
   return `
 <table border="0" cellpadding="0" cellspacing="0" width="100%"
-       style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;
-              margin-bottom:15px;box-sizing:border-box;">
+       style="background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:10px;
+              margin-bottom:15px;box-sizing:border-box;font-family:${FONT};">
   <tr><td style="padding:18px 20px;">
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:8px;">
       <tr>
-        <td style="font-weight:700;font-size:13px;color:#333;padding-right:10px;">
+        <td style="font-weight:700;font-size:13px;color:${BRAND.ink};padding-right:10px;">
           ${kpi.subtitle || kpi.title}
         </td>
         <td align="center" valign="middle" style="padding:0 8px;">
-          <div style="background:#f1f5f9;border:1px solid #e2e8f0;padding:4px 10px;
+          <div style="background:${BRAND.panel};border:1px solid ${BRAND.line};padding:4px 10px;
                       border-radius:8px;display:inline-block;">
-            <span style="font-size:11px;color:#475569;font-weight:600;">${kpi.responsible || 'N/A'}</span>
+            <span style="font-size:11px;color:${BRAND.text};font-weight:600;">${kpi.responsible || 'N/A'}</span>
           </div>
         </td>
         <td align="right" width="36">
-          <div style="background:${trendColor};color:#fff;padding:4px 8px;border-radius:6px;
+          <div style="background:${trendColor};color:#ffffff;padding:4px 8px;border-radius:6px;
                       font-weight:700;font-size:12px;display:inline-block;">${statusArrow}</div>
         </td>
       </tr>
     </table>
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:14px;">
       <tr><td align="center">
-        <span style="background:#8b5cf6;color:white;padding:5px 12px;border-radius:20px;
+        <span style="background:${BRAND.blueTint};color:${BRAND.blueDark};border:1px solid ${BRAND.blueSoft};padding:5px 12px;border-radius:20px;
                      font-size:12px;font-weight:700;display:inline-block;">
           Current: ${currentValue.toFixed(kpi.unit === '%' ? 1 : 2)} ${kpi.unit || ''}
           &nbsp;|&nbsp;
@@ -945,20 +988,20 @@ const createIndividualKPIChart = (kpi) => {
             <tr><td align="center">
               <img src="${chartUrl}" width="320" height="170" alt="KPI trend chart"
                    style="display:block;width:100%;max-width:320px;
-                          border:1px solid #f0f0f0;border-radius:6px;" />
+                          border:1px solid ${BRAND.line};border-radius:6px;" />
             </td></tr>
           </table>
           <table border="0" cellpadding="3" cellspacing="0" width="100%"
-                 style="margin-top:8px;border-top:1px solid #f0f0f0;">
+                 style="margin-top:8px;border-top:1px solid ${BRAND.line};">
             <tr><td align="center">
               <table border="0" cellpadding="0" cellspacing="6"><tr>
                 <td><table border="0" cellpadding="0" cellspacing="3"><tr>
-                  <td width="10" height="10" style="background:#22c55e;border-radius:50%;font-size:0;">&nbsp;</td>
-                  <td style="font-size:10px;color:#666;">Good direction</td>
+                  <td width="10" height="10" bgcolor="${STATUS.good}" style="background:${STATUS.good};border-radius:50%;font-size:0;">&nbsp;</td>
+                  <td style="font-size:10px;color:${BRAND.muted};">Good direction</td>
                 </tr></table></td>
                 <td><table border="0" cellpadding="0" cellspacing="3"><tr>
-                  <td width="10" height="10" style="background:#dc2626;border-radius:50%;font-size:0;">&nbsp;</td>
-                  <td style="font-size:10px;color:#666;">Outside good direction</td>
+                  <td width="10" height="10" bgcolor="${STATUS.critical}" style="background:${STATUS.critical};border-radius:50%;font-size:0;">&nbsp;</td>
+                  <td style="font-size:10px;color:${BRAND.muted};">Outside good direction</td>
                 </tr></table></td>
               </tr></table>
             </td></tr>
@@ -999,10 +1042,10 @@ const generateManagerReportHtml = (reportData) => {
         <tr><td>
           <table border="0" cellpadding="0" cellspacing="0" width="100%"
                  style="margin-bottom:20px;padding-bottom:10px;border-bottom:3px solid ${color};">
-            <tr><td style="padding:5px 0;">
-              <span style="font-size:20px;font-weight:700;color:#2c3e50;
+            <tr><td style="padding:5px 0;font-family:${FONT};">
+              <span style="font-size:20px;font-weight:700;color:${BRAND.ink};
                            text-transform:uppercase;">${department}</span>
-              <span style="font-size:12px;color:#6c757d;background:#f8f9fa;
+              <span style="font-size:12px;font-weight:700;color:${BRAND.blueDark};background:${BRAND.blueTint};
                            padding:5px 14px;border-radius:12px;margin-left:10px;">${kpis.length} KPIs</span>
             </td></tr>
           </table>
@@ -1012,61 +1055,63 @@ const generateManagerReportHtml = (reportData) => {
         </td></tr>
       </table>`;
   });
+  const reportWeekShort = week.replace('2026-Week', 'W');
+  const renderStat = (value, label, color) => `
+                    <td width="33%" align="center" valign="top" style="padding:18px 10px;font-family:${FONT};">
+                      <div style="font-size:28px;line-height:34px;font-weight:800;color:${color};">${value}</div>
+                      <div style="margin-top:4px;font-size:12px;color:${BRAND.muted};">${label}</div>
+                    </td>`;
   return `<!DOCTYPE html><html>
 <head><meta charset="utf-8"><title>Plant Weekly KPI Dashboard</title>
-<style>body{margin:0;padding:0;font-family:Arial,sans-serif;background:#f8f9fa;}</style></head>
-<body>
-  <div style="padding:30px 20px;max-width:1400px;margin:0 auto;">
-    <div style="background:white;border-radius:12px;padding:30px;box-shadow:0 4px 12px rgba(0,0,0,0.05);margin-bottom:30px;">
-      <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">CEO KPI Group DASHBOARD</h1>
-      <div style="font-size:14px;color:#6c757d;">
-        <strong>${plant.plant_name}</strong>  Week: <strong>${week.replace('2026-Week', 'W')}</strong>
-        Manager: <strong>${plant.manager || 'N/A'}</strong>
-        ${deliveryRecipient ? `&nbsp;&nbsp;|&nbsp;&nbsp;Recipient: <strong>${deliveryRecipient}</strong>` : ''}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:15px;
-                  background:#f8f9fa;padding:20px;border-radius:8px;margin-top:20px;">
-        <div style="text-align:center;">
-          <div style="font-size:28px;font-weight:800;color:#0078D7;">${stats.totalDepartments}</div>
-          <div style="font-size:12px;color:#6c757d;">Departments</div></div>
-        <div style="text-align:center;">
-          <div style="font-size:28px;font-weight:800;color:#28a745;">${stats.totalKPIs}</div>
-          <div style="font-size:12px;color:#6c757d;">Total KPIs</div></div>
-        <div style="text-align:center;">
-          <div style="font-size:28px;font-weight:800;color:#6f42c1;">${week.replace('2026-Week', 'W')}</div>
-          <div style="font-size:12px;color:#6c757d;">Current Week</div></div>
-      </div>
-    </div>
-    <div style="background:white;padding:30px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
-      ${kpiSections || '<div style="text-align:center;padding:60px;color:#6c757d;">No KPI data available</div>'}
-    </div>
-    <div style="background:#2c3e50;color:white;padding:25px;border-radius:12px;text-align:center;margin-top:30px;">
-      <div style="font-size:16px;font-weight:600;margin-bottom:10px;">AVOCarbon Plant Analytics</div>
-      <div style="font-size:13px;opacity:0.8;">Weekly KPI Performance Monitoring</div>
-    </div>
-  </div>
+<style>body{margin:0;padding:0;font-family:${FONT};background:${BRAND.page};color:${BRAND.text};}</style></head>
+<body style="margin:0;padding:0;font-family:${FONT};background:${BRAND.page};color:${BRAND.text};">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.page}" style="background:${BRAND.page};">
+    <tr>
+      <td align="center" style="padding:30px 20px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+               style="max-width:1400px;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
+          <tr>
+            <td style="padding:0;">${renderEmailHeader({ label: "Plant KPI dashboard", radius: 12 })}</td>
+          </tr>
+          <tr>
+            <td style="padding:28px 30px 0;font-family:${FONT};">
+              <div style="font-size:11px;line-height:16px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:${BRAND.blue};">Weekly KPI dashboard</div>
+              <h1 style="margin:6px 0 8px;font-size:28px;line-height:34px;font-weight:800;color:${BRAND.ink};">CEO KPI Group DASHBOARD</h1>
+              <div style="font-size:14px;line-height:21px;color:${BRAND.text};">
+                <strong style="color:${BRAND.ink};">${plant.plant_name}</strong>  Week: <strong style="color:${BRAND.ink};">${reportWeekShort}</strong>
+                Manager: <strong style="color:${BRAND.ink};">${plant.manager || 'N/A'}</strong>
+                ${deliveryRecipient ? `&nbsp;&nbsp;|&nbsp;&nbsp;Recipient: <strong style="color:${BRAND.ink};">${deliveryRecipient}</strong>` : ''}
+              </div>
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.panel}"
+                     style="margin-top:20px;background:${BRAND.panel};border:1px solid ${BRAND.line};border-radius:8px;">
+                <tr>
+                  ${renderStat(stats.totalDepartments, 'Departments', BRAND.blue)}
+                  ${renderStat(stats.totalKPIs, 'Total KPIs', BRAND.blue)}
+                  ${renderStat(reportWeekShort, 'Current Week', BRAND.orangeText)}
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:30px 30px 0;">
+              ${kpiSections || `<div style="text-align:center;padding:60px;font-family:${FONT};color:${BRAND.muted};">No KPI data available</div>`}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0;">
+              ${renderEmailFooter({ note: 'AVOCarbon Plant Analytics &middot; Weekly KPI Performance Monitoring' })}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 </body></html>`;
 };
 
-const getDepartmentColor = (departmentName) => {
-  if (!departmentName) return '#6c757d';
-  if (departmentName.includes('Sales')) return '#667eea';
-  if (departmentName.includes('Production')) return '#4facfe';
-  if (departmentName.includes('Quality')) return '#43e97b';
-  if (departmentName.includes('VOH')) return '#909d6f';
-  if (departmentName.includes('Engineering')) return '#36a07b';
-  if (departmentName.includes('Human resources')) return '#78d69a';
-  if (departmentName.includes('Stocks')) return '#6a772a';
-  if (departmentName.includes('AR/AP')) return '#96ce25';
-  if (departmentName.includes('Cash')) return '#54591b';
-  const colorMap = {
-    'Production': '#667eea', 'Quality': '#f093fb', 'Maintenance': '#4facfe',
-    'Safety': '#43e97b', 'Operations': '#fa709a', 'Engineering': '#30cfd0',
-    'Supply-chain': '#f6d365', 'Administration': '#a8edea', 'Finance': '#f093fb',
-    'HR': '#4facfe', 'IT': '#667eea', 'Sales': '#43e97b', 'Other': '#6c757d'
-  };
-  return colorMap[departmentName] || '#6c757d';
-};
+// Departments are nominal categories, not statuses: they all share AVO blue,
+// the department name already identifies each section.
+const getDepartmentColor = () => BRAND.blue;
 
 function processKPIChartData(rows) {
   const kpis = new Map();
@@ -1114,8 +1159,8 @@ function processKPIChartData(rows) {
       const cur = vals[vals.length - 1], prev = vals[vals.length - 2];
       kpi.trend = ((cur - prev) / prev) * 100;
       kpi.trendIcon = cur > prev ? '\u2197' : cur < prev ? '\u2198' : '\u2192';
-      kpi.trendColor = cur > prev ? '#10b981' : cur < prev ? '#ef4444' : '#6b7280';
-    } else { kpi.trend = 0; kpi.trendIcon = '\u2192'; kpi.trendColor = '#6b7280'; }
+      kpi.trendColor = cur > prev ? STATUS.goodText : cur < prev ? STATUS.criticalText : BRAND.muted;
+    } else { kpi.trend = 0; kpi.trendIcon = '\u2192'; kpi.trendColor = BRAND.muted; }
     if (kpi.low_limit !== null || kpi.high_limit !== null) {
       const latest = vals[vals.length - 1];
       kpi.achievementVsLimit = !needsCorrectiveAction(latest, kpi.low_limit, kpi.high_limit, kpi.direction);
@@ -1134,55 +1179,56 @@ function generateTrendsDashboardHTML(responsible, kpiData) {
   <title>KPI Trends - ${responsible.name}</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
+    ${BRAND_PAGE_CSS}
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:'Segoe UI',sans-serif;background:linear-gradient(rgba(0,0,0,0.7),rgba(0,0,0,0.7)),
-      url('https://images.unsplash.com/photo-1542744095-fcf48d80b0fd?w=1920') center/cover fixed;
-      color:#fff;min-height:100vh;}
-    .container{max-width:1400px;margin:0 auto;padding:20px;}
-    .dashboard-header{background:rgba(31,41,55,0.95);border:1px solid rgba(255,255,255,0.1);
-      backdrop-filter:blur(10px);border-radius:24px;padding:40px;margin-bottom:30px;}
+    body{font-family:${FONT};background:${BRAND.page};color:${BRAND.text};min-height:100vh;}
+    .container{max-width:1400px;margin:0 auto;padding:28px 20px;}
+    .dashboard-header{background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;padding:36px 40px;margin-bottom:30px;}
+    .meta-label{font-size:12px;font-weight:700;letter-spacing:0.6px;color:${BRAND.muted};margin-bottom:5px;}
+    .meta-value{font-size:18px;font-weight:600;color:${BRAND.ink};}
     .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-top:30px;}
-    .stat-card{background:rgba(255,255,255,0.1);border-radius:16px;padding:20px;border:1px solid rgba(255,255,255,0.2);}
-    .stat-value{font-size:32px;font-weight:700;margin-bottom:5px;}
-    .stat-label{font-size:14px;opacity:0.8;text-transform:uppercase;letter-spacing:0.5px;}
+    .stat-card{background:${BRAND.panel};border-radius:12px;padding:20px;border:1px solid ${BRAND.line};border-top:3px solid ${BRAND.blue};}
+    .stat-value{font-size:32px;font-weight:700;margin-bottom:5px;color:${BRAND.blue};}
+    .stat-label{font-size:13px;color:${BRAND.muted};text-transform:uppercase;letter-spacing:0.5px;}
     .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(600px,1fr));gap:30px;margin-bottom:40px;}
     @media(max-width:1300px){.kpi-grid{grid-template-columns:1fr;}}
-    .kpi-card{background:rgba(255,255,255,0.95);color:#1f2937;border-radius:20px;padding:30px;
-      border:1px solid rgba(255,255,255,0.2);transition:all 0.3s ease;}
-    .kpi-card:hover{transform:translateY(-5px);box-shadow:0 20px 40px rgba(0,0,0,0.3);}
+    .kpi-card{background:${BRAND.white};color:${BRAND.text};border-radius:12px;padding:30px;
+      border:1px solid ${BRAND.line};transition:box-shadow 0.2s ease, border-color 0.2s ease;}
+    .kpi-card:hover{border-color:${BRAND.blueSoft};box-shadow:0 8px 24px rgba(23,23,23,0.08);}
     .kpi-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:25px;}
     .chart-container{height:300px;margin:25px 0;position:relative;}
     .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-top:25px;}
-    .stat-box{background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;}
-    .stat-box .label{font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;}
-    .stat-box .value{font-size:20px;font-weight:700;color:#111827;}
-    .footer{text-align:center;margin-top:50px;padding:30px;border-top:1px solid rgba(255,255,255,0.1);}
-    @media(max-width:768px){.kpi-grid{grid-template-columns:1fr;}.stats-row{grid-template-columns:repeat(2,1fr);}}
+    .stat-box{background:${BRAND.panel};border-radius:12px;padding:15px;text-align:center;border:1px solid ${BRAND.line};}
+    .stat-box .label{font-size:12px;color:${BRAND.muted};margin-bottom:5px;text-transform:uppercase;}
+    .stat-box .value{font-size:20px;font-weight:700;color:${BRAND.ink};}
+    .footer{text-align:center;margin-top:50px;padding:30px;border-top:1px solid ${BRAND.line};color:${BRAND.muted};font-size:13px;}
+    @media(max-width:768px){.kpi-grid{grid-template-columns:1fr;}.stats-row{grid-template-columns:repeat(2,1fr);}.dashboard-header{padding:24px 20px;}}
   </style>
 </head>
 <body>
+  ${renderPageHeader({ label: "KPI trends" })}
   <div class="container">
     <header class="dashboard-header">
-      <h1 style="font-size:36px;font-weight:800;color:#fff;margin-bottom:10px;">KPI Trends & Analytics</h1>
-      <p style="font-size:18px;opacity:0.9;margin-bottom:25px;">Performance metrics across all production weeks</p>
+      <h1 style="font-size:32px;font-weight:800;color:${BRAND.ink};margin-bottom:10px;">KPI Trends & Analytics</h1>
+      <p style="font-size:17px;color:${BRAND.muted};margin-bottom:25px;">Performance metrics across all production weeks</p>
       <div style="display:flex;gap:30px;flex-wrap:wrap;">
-        <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">OPERATOR</div>
-          <div style="font-size:18px;font-weight:600;">${responsible.name}</div></div>
-        <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">FACTORY</div>
-          <div style="font-size:18px;font-weight:600;">${responsible.plant_name}</div></div>
-        <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">DEPARTMENT</div>
-          <div style="font-size:18px;font-weight:600;">${responsible.department_name}</div></div>
+        <div><div class="meta-label">OPERATOR</div>
+          <div class="meta-value">${responsible.name}</div></div>
+        <div><div class="meta-label">FACTORY</div>
+          <div class="meta-value">${responsible.plant_name}</div></div>
+        <div><div class="meta-label">DEPARTMENT</div>
+          <div class="meta-value">${responsible.department_name}</div></div>
       </div>
       <div class="stats-grid">
-        <div class="stat-card"><div class="stat-value" style="color:#60a5fa;">${totalKPIs}</div>
+        <div class="stat-card"><div class="stat-value">${totalKPIs}</div>
           <div class="stat-label">Active KPIs</div></div>
-        <div class="stat-card"><div class="stat-value" style="color:#34d399;">${totalWeeks}</div>
+        <div class="stat-card"><div class="stat-value">${totalWeeks}</div>
           <div class="stat-label">Production Weeks</div></div>
         <div class="stat-card">
-          <div class="stat-value" style="color:#fbbf24;">${kpis.reduce((acc, k) => acc + k.values.length, 0)}</div>
+          <div class="stat-value">${kpis.reduce((acc, k) => acc + k.values.length, 0)}</div>
           <div class="stat-label">Data Points</div></div>
         <div class="stat-card">
-          <div class="stat-value" style="color:#f87171;">${kpis.filter(k => k.low_limit !== null).length}</div>
+          <div class="stat-value">${kpis.filter(k => k.low_limit !== null).length}</div>
           <div class="stat-label">KPIs with Limits</div></div>
       </div>
     </header>
@@ -1192,7 +1238,7 @@ function generateTrendsDashboardHTML(responsible, kpiData) {
       </div>
     </main>
     <footer class="footer">
-      <p style="color:rgba(255,255,255,0.8);">AVOCarbon Industrial Analytics | ${new Date().getFullYear()}</p>
+      <p>AVOCarbon Industrial Analytics | ${new Date().getFullYear()}</p>
     </footer>
   </div>
   <script>
@@ -1209,12 +1255,12 @@ function generateKPIChartHTML(kpi, index) {
     <div class="kpi-card">
       <div class="kpi-header">
         <div>
-          <h3 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:5px;">${kpi.subject}</h3>
-          ${kpi.subtitle ? `<p style="font-size:14px;color:#6b7280;">${kpi.subtitle}</p>` : ''}
+          <h3 style="font-size:20px;font-weight:700;color:${BRAND.ink};margin-bottom:5px;">${kpi.subject}</h3>
+          ${kpi.subtitle ? `<p style="font-size:14px;color:${BRAND.muted};">${kpi.subtitle}</p>` : ''}
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${kpi.unit ? `<span style="padding:6px 12px;border-radius:20px;font-size:12px;
-            font-weight:600;background:#f3f4f6;color:#374151;">Unit: ${kpi.unit}</span>` : ''}
+            font-weight:600;background:${BRAND.blueTint};color:${BRAND.blueDark};">Unit: ${kpi.unit}</span>` : ''}
           <span style="padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;
             background:${kpi.trendColor}20;color:${kpi.trendColor};">
             ${kpi.trendIcon} ${Math.abs(kpi.trend).toFixed(1)}%</span>
@@ -1224,42 +1270,42 @@ function generateKPIChartHTML(kpi, index) {
       
       <!-- Three key metrics side by side - Target, High Limit, Low Limit -->
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:25px 0;">
-        <!-- Target Box -->
-        <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
-          <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
+        <!-- Target Box (same colors as the chart lines: target AVO blue, limits GROUP orange) -->
+        <div style="background:${BRAND.panel};border-radius:12px;padding:15px;text-align:center;border:1px solid ${BRAND.line};">
+          <div style="font-size:12px;color:${BRAND.muted};margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
             <span>Target</span>
           </div>
-          <div style="font-size:24px;font-weight:700;color:#f97316;">
+          <div style="font-size:24px;font-weight:700;color:${BRAND.blue};">
             ${kpi.target !== null ? kpi.target.toFixed(2) : 'N/A'}
           </div>
         </div>
-        
+
         <!-- High Limit Box -->
-        <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
-          <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
+        <div style="background:${BRAND.panel};border-radius:12px;padding:15px;text-align:center;border:1px solid ${BRAND.line};">
+          <div style="font-size:12px;color:${BRAND.muted};margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
             <span>High Limit</span>
           </div>
-          <div style="font-size:24px;font-weight:700;color:#f97316;">
+          <div style="font-size:24px;font-weight:700;color:${BRAND.orangeText};">
             ${kpi.high_limit !== null ? kpi.high_limit.toFixed(2) : 'N/A'}
           </div>
         </div>
-        
+
         <!-- Low Limit Box -->
-        <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
-          <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
+        <div style="background:${BRAND.panel};border-radius:12px;padding:15px;text-align:center;border:1px solid ${BRAND.line};">
+          <div style="font-size:12px;color:${BRAND.muted};margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
             <span>Low Limit</span>
           </div>
-          <div style="font-size:24px;font-weight:700;color:#ef4444;">
+          <div style="font-size:24px;font-weight:700;color:${BRAND.orangeText};">
             ${kpi.low_limit !== null ? kpi.low_limit.toFixed(2) : 'N/A'}
           </div>
         </div>
       </div>
-      
+
       <!-- Secondary stats row (Average and Trend) -->
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:15px;margin-bottom:25px;">
         <div class="stat-box">
           <div class="label">Average</div>
-          <div class="value" style="color:#3b82f6;">${kpi.average ? kpi.average.toFixed(2) : 'N/A'}</div>
+          <div class="value" style="color:${BRAND.blue};">${kpi.average ? kpi.average.toFixed(2) : 'N/A'}</div>
         </div>
         <div class="stat-box">
           <div class="label">Trend</div>
@@ -1269,16 +1315,16 @@ function generateKPIChartHTML(kpi, index) {
       
       <div style="display:flex;gap:15px;margin-top:15px;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:6px;">
-          <div style="width:12px;height:12px;border-radius:50%;background:#22c55e;"></div>
-          <span style="font-size:12px;color:#6b7280;">Within good direction</span></div>
+          <div style="width:12px;height:12px;border-radius:50%;background:${STATUS.good};"></div>
+          <span style="font-size:12px;color:${BRAND.muted};">Within good direction</span></div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <div style="width:12px;height:12px;border-radius:50%;background:#ef4444;"></div>
-          <span style="font-size:12px;color:#6b7280;">Outside good direction</span></div>
+          <div style="width:12px;height:12px;border-radius:50%;background:${STATUS.critical};"></div>
+          <span style="font-size:12px;color:${BRAND.muted};">Outside good direction</span></div>
       </div>
       ${kpi.definition ? `
-        <div style="margin-top:20px;padding:15px;background:#f8fafc;border-radius:12px;border-left:4px solid #667eea;">
-          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">Definitsqcion</div>
-          <div style="font-size:14px;color:#475569;">${kpi.definition}</div>
+        <div style="margin-top:20px;padding:15px;background:${BRAND.panel};border-radius:12px;border-left:4px solid ${BRAND.orange};">
+          <div style="font-size:12px;color:${BRAND.muted};margin-bottom:5px;">Definition</div>
+          <div style="font-size:14px;color:${BRAND.text};">${kpi.definition}</div>
         </div>` : ''}
     </div>`;
 }
@@ -1295,16 +1341,17 @@ function initializeChartJS(kpi, index) {
 
   const pointColors = JSON.stringify(kpi.values.map((v) => {
     const status = getKpiStatus(v, lowLimit, highLimit, direction);
-    if (status.isGood === null) return '#6b7280';
-    return status.isGood ? '#22c55e' : '#ef4444';
+    if (status.isGood === null) return BRAND.faint;
+    return status.isGood ? STATUS.good : STATUS.critical;
   }));
 
+  // Both limit lines are dashed GROUP orange (same chart colors as the frontend).
   const extraDatasets = [];
   if (highLimit !== null) {
     extraDatasets.push(`{
       label: 'High Limit',
       data: Array(${kpi.values.length}).fill(${highLimit}),
-      type: 'line', borderColor: '#f97316',
+      type: 'line', borderColor: '${BRAND.orange}',
       borderDash: [6,4], borderWidth: 2,
       pointRadius: 0, fill: false, tension: 0, order: 1
     }`);
@@ -1313,7 +1360,7 @@ function initializeChartJS(kpi, index) {
     extraDatasets.push(`{
       label: 'Low Limit',
       data: Array(${kpi.values.length}).fill(${lowLimit}),
-      type: 'line', borderColor: '#ef4444',
+      type: 'line', borderColor: '${BRAND.orange}',
       borderDash: [6,4], borderWidth: 2,
       pointRadius: 0, fill: false, tension: 0, order: 1
     }`);
@@ -1330,7 +1377,7 @@ function initializeChartJS(kpi, index) {
           {
             label: '${kpi.subject}',
             data: ${JSON.stringify(kpi.values)},
-            borderColor: '#94a3b8',
+            borderColor: '${BRAND.gray}',
             borderWidth: 2,
             backgroundColor: pc${index},
             pointBackgroundColor: pc${index},
@@ -1349,9 +1396,9 @@ function initializeChartJS(kpi, index) {
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          legend: { position: 'top', labels: { font: { size: 12 }, padding: 20, usePointStyle: true } },
+          legend: { position: 'top', labels: { font: { size: 12 }, color: '${BRAND.text}', padding: 20, usePointStyle: true } },
           tooltip: {
-            backgroundColor: 'rgba(31,41,55,0.9)',
+            backgroundColor: 'rgba(23,23,23,0.9)',
             padding: 12, cornerRadius: 8,
             callbacks: {
               label: function(ctx) {
@@ -1363,9 +1410,9 @@ function initializeChartJS(kpi, index) {
           }
         },
         scales: {
-          x: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { font: { size: 11 } } },
-          y: { beginAtZero: false, min: ${axisRange.min}, max: ${axisRange.max}, grid: { color: 'rgba(0,0,0,0.05)' },
-               ticks: { font: { size: 11 },
+          x: { grid: { color: '${BRAND.line}' }, ticks: { font: { size: 11 }, color: '${BRAND.muted}' } },
+          y: { beginAtZero: false, min: ${axisRange.min}, max: ${axisRange.max}, grid: { color: '${BRAND.line}' },
+               ticks: { font: { size: 11 }, color: '${BRAND.muted}',
                   callback: function(v){ return v + '${kpi.unit ? ' ' + kpi.unit : ''}'; } } }
         },
         interaction: { intersect: false, mode: 'index' }
@@ -1375,16 +1422,25 @@ function initializeChartJS(kpi, index) {
 }
 
 function createErrorHTML(message) {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-    <body style="font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#ef4444,#dc2626);
-      min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px;margin:0;">
-      <div style="background:rgba(255,255,255,0.95);border-radius:24px;padding:50px 40px;text-align:center;max-width:500px;">
-        <div style="font-size:72px;color:#ef4444;margin-bottom:30px;">âŒ</div>
-        <h1 style="color:#1f2937;font-size:28px;">Error Loading KPI Trends</h1>
-        <div style="color:#6b7280;padding:15px;background:#fef2f2;border-radius:12px;margin:20px 0;">${message}</div>
-        <a href="/" style="display:inline-block;padding:15px 30px;background:linear-gradient(135deg,#ef4444,#dc2626);
-          color:white;text-decoration:none;border-radius:12px;font-weight:600;">Return to Home</a>
-      </div>
+  // Neutral branded page with a critical accent (no full red gradient).
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>Error Loading KPI Trends</title>
+    <style>
+      ${BRAND_PAGE_CSS}
+      body{margin:0;font-family:${FONT};background:${BRAND.page};color:${BRAND.text};min-height:100vh;}
+    </style></head>
+    <body>
+      ${renderPageHeader({ label: "KPI trends" })}
+      <main style="display:flex;justify-content:center;padding:56px 20px;">
+        <div style="background:${BRAND.white};border:1px solid ${BRAND.line};border-top:4px solid ${STATUS.critical};border-radius:12px;padding:44px 40px;text-align:center;max-width:500px;width:100%;box-sizing:border-box;">
+          <div style="width:56px;height:56px;margin:0 auto 24px;border-radius:50%;background:${STATUS.criticalTint};border:1px solid ${STATUS.criticalSoft};color:${STATUS.criticalText};font-size:28px;font-weight:800;line-height:56px;">!</div>
+          <h1 style="margin:0;color:${BRAND.ink};font-size:26px;line-height:1.25;">Error Loading KPI Trends</h1>
+          <div style="color:${BRAND.text};padding:15px;background:${STATUS.criticalTint};border:1px solid ${STATUS.criticalSoft};border-radius:8px;margin:20px 0 24px;">${message}</div>
+          <a href="/" style="display:inline-block;padding:13px 28px;background:${BRAND.blue};
+            color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;">Return to Home</a>
+        </div>
+      </main>
     </body></html>`;
 }
 
@@ -1938,10 +1994,10 @@ async function sendDepartmentKPIReportEmail(plantId, currentWeek, recipientOverr
       to: deliveryRecipient,
       subject: `Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${reportWeek.replace('2026-Week', '')}`,
       html: emailHtml,
-      attachments: pdfAttachment ? [{
+      attachments: withLogoAttachment(pdfAttachment ? [{
         ...pdfAttachment,
         contentDisposition: "attachment"
-      }] : []
+      }] : [])
     });
 
     console.log("[Plant KPI Report] Mail result:", {
@@ -2017,14 +2073,14 @@ async function sendConsolidatedManagerReport(manager, directReportPeopleIds, cur
           .filter(Boolean)
           .forEach((att) => allInlineAttachments.push({ ...att, contentDisposition: "inline" }));
       } else {
-        chartsHtml = `<div style="padding:20px;text-align:center;color:#64748b;font-size:13px;">No KPI data available for this period.</div>`;
+        chartsHtml = `<div style="padding:20px;text-align:center;font-family:${FONT};color:${BRAND.muted};font-size:13px;">No KPI data available for this period.</div>`;
       }
 
       responsibleSections.push(`
-        <div style="margin:0 0 28px;border:1px solid #dbe4ef;border-radius:14px;overflow:hidden;background:#ffffff;">
-          <div style="background:#1e3a5f;padding:14px 20px;">
+        <div style="margin:0 0 28px;border:1px solid ${BRAND.line};border-radius:12px;overflow:hidden;background:${BRAND.white};">
+          <div style="background:${BRAND.blueDeep};border-left:4px solid ${BRAND.orange};padding:14px 20px;font-family:${FONT};">
             <div style="font-size:15px;font-weight:700;color:#ffffff;">${escapeWeeklyReportText(respName, 100)}</div>
-            <div style="font-size:12px;color:#94a3b8;margin-top:3px;">
+            <div style="font-size:12px;color:${BRAND.rule};margin-top:3px;">
               ${respRole ? escapeWeeklyReportText(respRole, 80) + " &nbsp;|&nbsp; " : ""}${escapeWeeklyReportText(respPlant, 80)}
               &nbsp;&nbsp;
               
@@ -2051,38 +2107,35 @@ async function sendConsolidatedManagerReport(manager, directReportPeopleIds, cur
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
   </head>
-  <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#edf3fb;color:#0f172a;">
-    <div style="display:none;font-size:1px;color:#edf3fb;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+  <body style="margin:0;padding:0;font-family:${FONT};background:${BRAND.page};color:${BRAND.text};">
+    <div style="display:none;font-size:1px;color:${BRAND.page};line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
       Manager KPI Report ${escapeWeeklyReportText(reportWeekLabel, 40)} — ${directReportPeopleIds.length} direct report(s).
     </div>
-    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#edf3fb;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.page}" style="background:${BRAND.page};">
       <tr>
         <td align="center" style="padding:28px 18px;">
-          <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:1040px;background:#f8fbff;border-radius:18px;">
+          <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+                 style="max-width:1040px;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
             <!-- Header -->
             <tr>
-              <td style="padding:30px 30px 22px;">
-                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#127bd8;border-radius:10px;">
-                  <tr>
-                    <td align="center" style="padding:26px 20px;">
-                      <div style="font-size:20px;font-weight:700;color:#ffffff;margin:0 0 6px;">&#128202; Manager KPI Report</div>
-                      <div style="font-size:14px;color:#e0f2fe;margin:0 0 14px;">
-                        ${escapeWeeklyReportText(reportWeekLabel, 40)}
+              <td style="padding:0;">${renderEmailHeader({ label: "Manager KPI report", radius: 12 })}</td>
+            </tr>
+            <tr>
+              <td style="padding:28px 30px 22px;">
+                ${renderReportTitleBlock({
+                  eyebrow: "Direct reports",
+                  title: "Manager KPI Report",
+                  meta: `${escapeWeeklyReportText(reportWeekLabel, 40)}
                         &nbsp;|&nbsp; ${escapeWeeklyReportText(managerName, 80)}
-                        &nbsp;|&nbsp; ${escapeWeeklyReportText(managerRoleName, 80)}
-                      </div>
-                      <div style="font-size:12px;color:#bae6fd;">
-                        ${directReportPeopleIds.length} direct report(s) included in this report
-                      </div>
-                    </td>
-                  </tr>
-                </table>
+                        &nbsp;|&nbsp; ${escapeWeeklyReportText(managerRoleName, 80)}`,
+                  detail: `${directReportPeopleIds.length} direct report(s) included in this report`
+                })}
               </td>
             </tr>
             <!-- Info banner -->
             <tr>
               <td style="padding:0 30px 20px;">
-                <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 14px;color:#1d4ed8;font-size:13px;line-height:1.5;">
+                <div style="background:${BRAND.blueTint};border:1px solid ${BRAND.blueSoft};border-radius:8px;padding:12px 14px;font-family:${FONT};color:${BRAND.blueDark};font-size:13px;line-height:1.5;">
                   This report shows the KPI performance of your <strong>direct reports</strong> for ${escapeWeeklyReportText(reportWeekLabel, 40)}.
                   Each section below corresponds to one of your direct reports.
                 </div>
@@ -2090,14 +2143,14 @@ async function sendConsolidatedManagerReport(manager, directReportPeopleIds, cur
             </tr>
             <!-- Responsible sections -->
             <tr>
-              <td style="padding:0 30px 30px;">
+              <td style="padding:0 30px 8px;">
                 ${responsibleSections.join("")}
               </td>
             </tr>
             <!-- Footer -->
             <tr>
-              <td style="padding:18px 24px 26px;text-align:center;font-size:12px;color:#64748b;border-top:1px solid #dbe4ef;">
-                AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}
+              <td style="padding:0;">
+                ${renderEmailFooter({ note: `AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}` })}
               </td>
             </tr>
           </table>
@@ -2122,7 +2175,7 @@ async function sendConsolidatedManagerReport(manager, directReportPeopleIds, cur
     to: manager.email,
     subject: `Manager KPI Report — Direct Reports — ${reportWeekLabel}`,
     html: emailHtml,
-    attachments: allInlineAttachments,
+    attachments: withLogoAttachment(allInlineAttachments),
     headers: {
       "X-Auto-Response-Suppress": "OOF, AutoReply",
       "X-Manager-Report-Id": messageToken

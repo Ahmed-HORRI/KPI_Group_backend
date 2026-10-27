@@ -6,6 +6,16 @@ const { getPeopleDisplayName } = require("../models/kpi.model");
 const { escapeHtml, formatDisplayDate } = require("./kpiShared.service");
 const { formatIsoDateValue } = require("../utils/weekPeriod");
 const { getPeopleHierarchy } = require("./hierarchyReport.service");
+// AVOCarbon graphic charter (pure module): colors, e-mail header/footer, logo.
+const {
+  BRAND,
+  STATUS,
+  FONT,
+  logoAttachment,
+  renderEmailHeader,
+  renderEmailFooter,
+  renderEmailButton
+} = require("../config/brand");
 
 const toArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -1239,11 +1249,19 @@ const buildKpiTrainingNotificationRowsHtml = (rows = []) =>
     .map(
       (row) => `
         <tr>
-          <td style="padding:11px 14px;background:#f8fafc;color:#475569;font-weight:700;width:180px;border-top:1px solid #e2e8f0;">${escapeHtml(row.label)}</td>
-          <td style="padding:11px 14px;color:#0f172a;border-top:1px solid #e2e8f0;">${escapeHtml(row.value)}</td>
+          <td valign="top" bgcolor="${BRAND.panel}" style="padding:11px 14px;background:${BRAND.panel};color:${BRAND.muted};font-size:13px;font-weight:700;width:180px;border-top:1px solid ${BRAND.line};">${escapeHtml(row.label)}</td>
+          <td valign="top" style="padding:11px 14px;color:${BRAND.ink};font-size:14px;border-top:1px solid ${BRAND.line};">${escapeHtml(row.value)}</td>
         </tr>`
     )
     .join("");
+
+// Badge colors of the notification stages: a plain reminder is informational
+// (AVO blue), escalations keep their status meaning (warning, then critical).
+const KPI_TRAINING_EMAIL_TONES = {
+  info: { background: BRAND.blueTint, border: BRAND.blueSoft, color: BRAND.blueDark },
+  warning: { background: STATUS.warningTint, border: STATUS.warningSoft, color: STATUS.warningText },
+  critical: { background: STATUS.criticalTint, border: STATUS.criticalSoft, color: STATUS.criticalText }
+};
 
 const buildKpiTrainingNotificationEmailHtml = ({
   eyebrow,
@@ -1253,27 +1271,25 @@ const buildKpiTrainingNotificationEmailHtml = ({
   summaryRows = [],
   actionLabel = null,
   actionUrl = null,
-  accentStart = "#1d4ed8",
-  accentEnd = "#0f766e",
+  tone = "info",
   footerHtml = null
 }) => {
   const summaryRowsHtml = buildKpiTrainingNotificationRowsHtml(summaryRows);
+  const badge = KPI_TRAINING_EMAIL_TONES[tone] || KPI_TRAINING_EMAIL_TONES.info;
   const actionBlock =
     normalizeOptionalTextInput(actionLabel) && normalizeOptionalTextInput(actionUrl)
       ? `
-        <div style="margin:26px 0 0;">
-          <a href="${escapeHtml(actionUrl)}" style="display:inline-block;background:${accentStart};color:#ffffff;text-decoration:none;padding:13px 20px;border-radius:999px;font-weight:700;font-size:14px;">
-            ${escapeHtml(actionLabel)}
-          </a>
+        <div style="margin:28px 0 0;">
+          ${renderEmailButton({ label: escapeHtml(actionLabel), href: escapeHtml(actionUrl) })}
         </div>
-        <div style="margin-top:10px;font-size:12px;line-height:1.6;color:#64748b;">${escapeHtml(actionUrl)}</div>`
+        <div style="margin-top:12px;text-align:center;font-size:12px;line-height:1.6;color:${BRAND.muted};word-break:break-all;">${escapeHtml(actionUrl)}</div>`
       : "";
   const summaryBlock = summaryRowsHtml
     ? `
-      <div style="margin-top:22px;font-size:12px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:#64748b;">
+      <div style="margin-top:24px;font-size:12px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:${BRAND.ink};">
         Summary
       </div>
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:12px;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:12px;border-collapse:separate;border-spacing:0;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;overflow:hidden;">
         ${summaryRowsHtml}
       </table>`
     : "";
@@ -1285,34 +1301,41 @@ const buildKpiTrainingNotificationEmailHtml = ({
       <meta name="viewport" content="width=device-width,initial-scale=1.0" />
       <title>${escapeHtml(title)}</title>
     </head>
-    <body style="margin:0;padding:0;background:#edf2f7;font-family:'Segoe UI',Arial,sans-serif;color:#0f172a;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;background:#edf2f7;">
+    <body style="margin:0;padding:0;background:${BRAND.page};font-family:${FONT};color:${BRAND.text};">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.page}" style="border-collapse:collapse;background:${BRAND.page};">
         <tr>
-          <td align="center" style="padding:26px 16px;">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:760px;width:100%;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #dbe3ee;border-radius:26px;overflow:hidden;box-shadow:0 24px 60px rgba(15,23,42,0.10);">
+          <td align="center" style="padding:28px 16px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}" style="max-width:760px;width:100%;border-collapse:separate;border-spacing:0;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
               <tr>
-                <td style="padding:0;background:${accentStart};background-image:linear-gradient(135deg, ${accentStart}, ${accentEnd});">
-                  <div style="padding:30px 32px 28px;">
-                    <div style="display:inline-block;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.18);font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#ffffff;">
-                      ${escapeHtml(eyebrow)}
-                    </div>
-                    <h1 style="margin:18px 0 0;font-size:30px;line-height:1.18;color:#ffffff;letter-spacing:-0.03em;">
-                      ${escapeHtml(title)}
-                    </h1>
-                  </div>
+                <td style="padding:0;">${renderEmailHeader({ label: "KPI Training", radius: 12 })}</td>
+              </tr>
+              <tr>
+                <td style="padding:30px 32px 0;font-family:${FONT};">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td bgcolor="${badge.background}" style="padding:5px 12px;border-radius:999px;background:${badge.background};border:1px solid ${badge.border};font-size:11px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:${badge.color};">
+                        ${escapeHtml(eyebrow)}
+                      </td>
+                    </tr>
+                  </table>
+                  <h1 style="margin:14px 0 0;font-size:26px;line-height:1.25;font-weight:800;color:${BRAND.ink};">
+                    ${escapeHtml(title)}
+                  </h1>
                 </td>
               </tr>
               <tr>
-                <td style="padding:28px 32px 32px;">
-                  <div style="font-size:15px;line-height:1.8;color:#1e293b;">
-                    <div style="font-weight:700;margin-bottom:12px;">${escapeHtml(greeting)}</div>
+                <td style="padding:18px 32px 8px;font-family:${FONT};">
+                  <div style="font-size:15px;line-height:1.8;color:${BRAND.text};">
+                    <div style="font-weight:700;margin-bottom:12px;color:${BRAND.ink};">${escapeHtml(greeting)}</div>
                     ${introHtml}
                   </div>
                   ${summaryBlock}
                   ${actionBlock}
-                  <div style="margin-top:26px;padding-top:18px;border-top:1px solid #e2e8f0;font-size:13px;line-height:1.8;color:#64748b;">
-                    ${footerHtml || "This notification was sent automatically by the AVOCarbon KPI Training workflow."}
-                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:0;">
+                  ${renderEmailFooter({ note: footerHtml || "This notification was sent automatically by the AVOCarbon KPI Training workflow." })}
                 </td>
               </tr>
             </table>
@@ -1364,8 +1387,7 @@ const buildResponsibleTrainingReminderEmailHtml = ({
     ],
     actionLabel: "Open My KPI Training",
     actionUrl: portalUrl,
-    accentStart: "#1d4ed8",
-    accentEnd: "#0f766e"
+    tone: "info"
   });
 };
 
@@ -1413,8 +1435,7 @@ const buildManagerTrainingEscalationEmailHtml = ({
     ],
     actionLabel: "Open Training Dashboard",
     actionUrl: dashboardUrl,
-    accentStart: "#b45309",
-    accentEnd: "#dc2626",
+    tone: "warning",
     footerHtml: "Merci d'avance pour votre support.<br />Training manager"
   });
 };
@@ -1463,8 +1484,7 @@ const buildExecutiveTrainingEscalationEmailHtml = ({
     ],
     actionLabel: "Open Training Dashboard",
     actionUrl: dashboardUrl,
-    accentStart: "#7f1d1d",
-    accentEnd: "#991b1b"
+    tone: "critical"
   });
 };
 
@@ -2004,7 +2024,8 @@ const sendKpiTrainingNotification = async ({
         from: '"AVOCarbon KPI Training" <administration.STS@avocarbon.com>',
         to: recipientEmail,
         subject: payload.subject,
-        html: payload.html
+        html: payload.html,
+        attachments: [logoAttachment()]
       });
 
       await recordKpiTrainingStageLog({
@@ -2154,30 +2175,38 @@ async function sendKpiTrainingLinksToResponsibles() {
       `${appBaseUrl}/kpi-training-center?people_id=${encodeURIComponent(peopleId)}`;
 
     const emailHtml = `
-      <div style="font-family:Arial,sans-serif;background:#f4f7fb;padding:24px;">
-        <div style="max-width:680px;margin:auto;background:#ffffff;border-radius:18px;padding:28px;border:1px solid #e2e8f0;">
-          <h2 style="margin:0 0 12px;color:#0f172a;">KPI Training Assigned</h2>
+      <div style="font-family:${FONT};background:${BRAND.page};padding:24px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${BRAND.white}"
+               style="max-width:680px;margin:auto;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
+          <tr>
+            <td style="padding:0;">${renderEmailHeader({ label: "KPI Training", radius: 12 })}</td>
+          </tr>
+          <tr>
+            <td style="padding:28px 32px 8px;font-family:${FONT};">
+              <h2 style="margin:0 0 12px;font-size:24px;line-height:1.25;font-weight:800;color:${BRAND.ink};">KPI Training Assigned</h2>
 
-          <p style="font-size:14px;color:#334155;line-height:1.6;">
-            Hello ${escapeHtml(responsibleName)},
-          </p>
+              <p style="font-size:14px;color:${BRAND.text};line-height:1.6;">
+                Hello ${escapeHtml(responsibleName)},
+              </p>
 
-          <p style="font-size:14px;color:#334155;line-height:1.6;">
-            You have <strong>${row.assignment_count}</strong> KPI training assignment(s).
-            Please review all documentation, then complete the QCM.
-          </p>
+              <p style="font-size:14px;color:${BRAND.text};line-height:1.6;">
+                You have <strong style="color:${BRAND.ink};">${row.assignment_count}</strong> KPI training assignment(s).
+                Please review all documentation, then complete the QCM.
+              </p>
 
-          <div style="margin:24px 0;">
-            <a href="${trainingUrl}"
-               style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;padding:13px 20px;border-radius:999px;font-weight:700;font-size:14px;">
-              Open My KPI Training
-            </a>
-          </div>
+              <div style="margin:24px 0 12px;">
+                ${renderEmailButton({ label: "Open My KPI Training", href: trainingUrl })}
+              </div>
 
-          <p style="font-size:12px;color:#64748b;">
-            ${trainingUrl}
-          </p>
-        </div>
+              <p style="margin:0;text-align:center;font-size:12px;color:${BRAND.muted};word-break:break-all;">
+                ${trainingUrl}
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0;">${renderEmailFooter({ note: "This notification was sent automatically by the AVOCarbon KPI Training workflow." })}</td>
+          </tr>
+        </table>
       </div>
     `;
 
@@ -2186,7 +2215,8 @@ async function sendKpiTrainingLinksToResponsibles() {
         from: '"AVOCarbon KPI Training" <administration.STS@avocarbon.com>',
         to: recipientEmail,
         subject: "Your KPI Training Center",
-        html: emailHtml
+        html: emailHtml,
+        attachments: [logoAttachment()]
       });
 
       await pool.query(`

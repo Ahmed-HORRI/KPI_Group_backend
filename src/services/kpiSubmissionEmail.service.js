@@ -20,6 +20,7 @@ const {
   getKpiGoodDirectionMeta,
 } = require("./kpiShared.service");
 const { loadFormResponsibleContext } = require("../models/responsible.model");
+const { BRAND, STATUS, FONT, withLogoAttachment } = require("../config/brand");
 
 // actionPlan.service.js and ceoReportGeneration.service.js both require this
 // file at module top-level, so requiring them back the same way would be
@@ -197,6 +198,8 @@ const sendKPIEmail = async (responsibleId, week, options = {}) => {
       to: responsible.email,
       subject,
       html,
+      // The brand header of generateEmailHtml shows the logo as cid:avocarbon-logo.
+      attachments: withLogoAttachment(),
     });
 
     console.log("[KPI Email] SMTP RESULT:", {
@@ -716,6 +719,28 @@ const formatWeeklyReportWeekLabel = (week) => {
     : normalized;
 };
 
+// Status colors of the AVOCarbon charter (src/config/brand.js) for a good / bad
+// verdict of getKpiStatus -- the same verdict getDotColor paints with its own
+// palette. `text` picks the darker shade, readable as text on white; a value
+// without verdict is a faint mark in a chart, muted as text.
+const getWeeklyReportStatusColor = (isGood, { text = false } = {}) => {
+  if (isGood === true) return text ? STATUS.goodText : STATUS.good;
+  if (isGood === false) return text ? STATUS.criticalText : STATUS.critical;
+  return text ? BRAND.muted : BRAND.faint;
+};
+
+// Small legend key of a chart reference line (24 x 3 px), solid or dashed,
+// built from table cells so Outlook draws it too.
+const renderWeeklyReportLineKey = (color, dashed = false) => {
+  const segments = dashed ? [[6, color], [3, ""], [6, color], [3, ""], [6, color]] : [[24, color]];
+  return `
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto 7px;">
+                      <tr>
+                        ${segments.map(([width, fill]) => `<td width="${width}" height="3" ${fill ? `bgcolor="${fill}" ` : ""}style="width:${width}px;height:3px;line-height:3px;font-size:0;${fill ? `background:${fill};` : ""}">&nbsp;</td>`).join("")}
+                      </tr>
+                    </table>`;
+};
+
 const buildWeeklyReportChartModel = (chartData = {}) => {
   const title = truncateWeeklyReportText(chartData.title || "Untitled KPI", 120);
   const subtitle = truncateWeeklyReportText(chartData.subtitle || "", 160);
@@ -754,18 +779,23 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
   const resolvedDirection = normalizeKpiDirection(chartData.direction) || "up";
   const currentValue = safeValues[safeValues.length - 1] || 0;
   const currentStatus = getKpiStatus(currentValue, cleanLow, cleanHigh, resolvedDirection);
-  const pointColors = safeValues.map((value) => getDotColor(value, cleanLow, cleanHigh, resolvedDirection));
+  const pointColors = safeValues.map((value) =>
+    getWeeklyReportStatusColor(getKpiStatus(value, cleanLow, cleanHigh, resolvedDirection).isGood)
+  );
 
+  // Same chart colors as the frontend: points in the good / bad status color
+  // of each value, joined by a Carbon gray line; Target in AVO blue, High and
+  // Low limits both dashed GROUP orange (the labels tell them apart).
   const datasets = [
     {
       label: subtitle || title,
       data: safeValues,
-      borderColor: "#94a3b8",
+      borderColor: BRAND.gray,
       borderWidth: 2,
       lineTension: 0,
       fill: false,
       pointBackgroundColor: pointColors,
-      pointBorderColor: "#ffffff",
+      pointBorderColor: BRAND.white,
       pointBorderWidth: 2,
       pointRadius: 5
     }
@@ -775,7 +805,7 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
     datasets.push({
       label: `High Limit (${formatNumber(cleanHigh)})`,
       data: new Array(safeValues.length).fill(displayHigh),
-      borderColor: "#f97316",
+      borderColor: BRAND.orange,
       borderWidth: 2.25,
       borderDash: [10, 4],
       pointRadius: 0,
@@ -787,7 +817,7 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
     datasets.push({
       label: `Low Limit (${formatNumber(cleanLow)})`,
       data: new Array(safeValues.length).fill(displayLow),
-      borderColor: "#dc2626",
+      borderColor: BRAND.orange,
       borderWidth: 2.25,
       borderDash: [4, 6],
       pointRadius: 0,
@@ -799,7 +829,7 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
     datasets.push({
       label: `Target (${formatNumber(cleanTarget)})`,
       data: new Array(safeValues.length).fill(displayTarget),
-      borderColor: "#16a34a",
+      borderColor: BRAND.blue,
       borderWidth: 2.5,
       pointRadius: 0,
       fill: false
@@ -815,17 +845,18 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
       layout: { padding: { top: 8, right: 10, bottom: 4, left: 4 } },
       scales: {
         xAxes: [{
-          ticks: { fontSize: 10 },
-          gridLines: { color: "rgba(0,0,0,0.05)" }
+          ticks: { fontSize: 10, fontColor: BRAND.muted },
+          gridLines: { color: BRAND.line }
         }],
         yAxes: [{
           ticks: {
             fontSize: 10,
+            fontColor: BRAND.muted,
             beginAtZero: false,
             min: axisRange.min,
             max: axisRange.max
           },
-          gridLines: { color: "rgba(0,0,0,0.05)" }
+          gridLines: { color: BRAND.line }
         }]
       }
     }
@@ -844,18 +875,19 @@ const buildWeeklyReportChartModel = (chartData = {}) => {
     chartUrl,
     chartHeightPx,
     chartAlt: truncateWeeklyReportText(`${title} trend chart`, 120),
-    currentColor: getDotColor(currentValue, cleanLow, cleanHigh, resolvedDirection),
+    currentColor: getWeeklyReportStatusColor(currentStatus.isGood, { text: true }),
     currentValue: truncateWeeklyReportText(chartData?.stats?.current ?? formatNumber(currentValue), 40),
     averageValue: truncateWeeklyReportText(chartData?.stats?.average ?? "N/A", 40),
     periodsLabel: truncateWeeklyReportText(`${chartData?.stats?.dataPoints || safeValues.length} periods`, 40),
     directionArrow: currentStatus.isGood === false
       ? (resolvedDirection === "down" ? "↑" : "↓")
       : (resolvedDirection === "down" ? "↓" : "↑"),
-    directionColor: currentStatus.isGood === false ? "#dc2626" : "#16a34a",
+    directionColor: currentStatus.isGood === false ? STATUS.criticalText : STATUS.goodText,
+    // `color` / `dashed` describe the chart line of each threshold (legend key).
     thresholdBadges: [
-      cleanTarget !== null ? { label: "Target", value: formatNumber(cleanTarget), color: "#16a34a" } : null,
-      cleanHigh !== null ? { label: "High Limit", value: formatNumber(cleanHigh), color: "#ea580c" } : null,
-      cleanLow !== null ? { label: "Low Limit", value: formatNumber(cleanLow), color: "#dc2626" } : null
+      cleanTarget !== null ? { label: "Target", value: formatNumber(cleanTarget), color: BRAND.blue, dashed: false } : null,
+      cleanHigh !== null ? { label: "High Limit", value: formatNumber(cleanHigh), color: BRAND.orange, dashed: true } : null,
+      cleanLow !== null ? { label: "Low Limit", value: formatNumber(cleanLow), color: BRAND.orange, dashed: true } : null
     ].filter(Boolean),
     comments: (Array.isArray(chartData.comments) ? chartData.comments : [])
       .slice(0, WEEKLY_REPORT_MAX_COMMENTS)
@@ -943,17 +975,18 @@ const renderWeeklyReportChartCard = (chartModel, { imageSrc = "" } = {}) => {
           ${orderedThresholds.map((badge, index) => `
             <td valign="top" width="${Math.round(100 / orderedThresholds.length)}%"
                 ${index < orderedThresholds.length - 1 ? 'style="padding-right:10px;"' : ""}>
-              <table border="0" cellpadding="0" cellspacing="0" width="100%"
-                     style="background:#ffffff;border:1px solid #dbe4ef;border-radius:12px;">
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+                     style="background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;">
                 <tr>
                   <td align="center" style="padding:14px 10px 12px;">
-                    <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px;">
+                    ${renderWeeklyReportLineKey(badge.color, badge.dashed)}
+                    <div style="font-size:10px;font-weight:700;color:${BRAND.muted};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px;">
                       ${escapeWeeklyReportText(badge.label, 40)}
                     </div>
-                    <div style="font-size:20px;font-weight:700;color:${badge.color};line-height:1.2;">
+                    <div style="font-size:20px;font-weight:700;color:${BRAND.ink};line-height:1.2;">
                       ${escapeWeeklyReportText(badge.value, 40)}
                     </div>
-                    <div style="font-size:10px;color:#94a3b8;margin-top:4px;">
+                    <div style="font-size:10px;color:${BRAND.faint};margin-top:4px;">
                       ${escapeWeeklyReportText(chartModel.unit || "-", 20)}
                     </div>
                   </td>
@@ -967,18 +1000,18 @@ const renderWeeklyReportChartCard = (chartModel, { imageSrc = "" } = {}) => {
 
   const correctiveActionsPanelHtml = chartModel.correctiveActions.length
     ? chartModel.correctiveActions.map((entry) => `
-        <div style="margin-bottom:10px;padding:12px 12px;background:#fff4f4;border:1px solid #ffd6d6;border-left:4px solid #ef4444;border-radius:10px;">
-          <div style="font-size:11px;font-weight:700;color:#7f1d1d;margin-bottom:6px;">
+        <div style="margin-bottom:10px;padding:12px 12px;background:${STATUS.criticalTint};border:1px solid ${STATUS.criticalSoft};border-left:4px solid ${STATUS.critical};border-radius:10px;">
+          <div style="font-size:11px;font-weight:700;color:${BRAND.ink};margin-bottom:6px;">
             ${escapeWeeklyReportText(entry.weekLabel, 40)}
-            ${entry.status ? `<span style="margin-left:8px;color:#dc2626;">${escapeWeeklyReportText(entry.status, 50)}</span>` : ""}
+            ${entry.status ? `<span style="margin-left:8px;color:${STATUS.criticalText};">${escapeWeeklyReportText(entry.status, 50)}</span>` : ""}
           </div>
-          ${entry.rootCause ? `<div style="font-size:12px;color:#374151;line-height:1.45;margin-bottom:5px;"><strong>Root Cause</strong><br />${escapeWeeklyReportMultilineText(entry.rootCause, 220)}</div>` : ""}
-          ${entry.implementedSolution ? `<div style="font-size:12px;color:#374151;line-height:1.45;margin-bottom:5px;"><strong>Implemented Solution</strong><br />${escapeWeeklyReportMultilineText(entry.implementedSolution, 220)}</div>` : ""}
-          ${entry.dueDate ? `<div style="font-size:11px;color:#475569;margin-bottom:4px;"><strong>Due Date</strong><br />${escapeWeeklyReportText(entry.dueDate, 40)}</div>` : ""}
-          ${entry.responsible ? `<div style="font-size:11px;color:#475569;"><strong>Responsible</strong><br />${escapeWeeklyReportText(entry.responsible, 120)}</div>` : ""}
+          ${entry.rootCause ? `<div style="font-size:12px;color:${BRAND.text};line-height:1.45;margin-bottom:5px;"><strong>Root Cause</strong><br />${escapeWeeklyReportMultilineText(entry.rootCause, 220)}</div>` : ""}
+          ${entry.implementedSolution ? `<div style="font-size:12px;color:${BRAND.text};line-height:1.45;margin-bottom:5px;"><strong>Implemented Solution</strong><br />${escapeWeeklyReportMultilineText(entry.implementedSolution, 220)}</div>` : ""}
+          ${entry.dueDate ? `<div style="font-size:11px;color:${BRAND.muted};margin-bottom:4px;"><strong>Due Date</strong><br />${escapeWeeklyReportText(entry.dueDate, 40)}</div>` : ""}
+          ${entry.responsible ? `<div style="font-size:11px;color:${BRAND.muted};"><strong>Responsible</strong><br />${escapeWeeklyReportText(entry.responsible, 120)}</div>` : ""}
         </div>
       `).join("")
-    : `<div style="padding:24px 16px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;text-align:center;color:#64748b;font-size:12px;line-height:1.5;">
+    : `<div style="padding:24px 16px;background:${BRAND.panel};border:1px dashed ${BRAND.rule};border-radius:10px;text-align:center;color:${BRAND.muted};font-size:12px;line-height:1.5;">
          No corrective actions were recorded for this KPI in the selected period.
        </div>`;
 
@@ -987,11 +1020,11 @@ const renderWeeklyReportChartCard = (chartModel, { imageSrc = "" } = {}) => {
       <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:16px;">
         <tr>
           <td style="padding:0;">
-            <div style="font-size:11px;font-weight:700;color:#0f6cbd;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Latest Comment</div>
+            <div style="font-size:11px;font-weight:700;color:${BRAND.blue};text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Latest Comment</div>
             ${chartModel.comments.map((entry) => `
-              <div style="padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;">
-                <div style="font-size:11px;font-weight:700;color:#1d4ed8;margin-bottom:5px;">${escapeWeeklyReportText(entry.weekLabel, 40)}</div>
-                <div style="font-size:13px;color:#334155;line-height:1.5;">${escapeWeeklyReportMultilineText(entry.text, 280)}</div>
+              <div style="padding:12px 14px;background:${BRAND.blueTint};border:1px solid ${BRAND.blueSoft};border-left:4px solid ${BRAND.blue};border-radius:10px;">
+                <div style="font-size:11px;font-weight:700;color:${BRAND.blueDark};margin-bottom:5px;">${escapeWeeklyReportText(entry.weekLabel, 40)}</div>
+                <div style="font-size:13px;color:${BRAND.text};line-height:1.5;">${escapeWeeklyReportMultilineText(entry.text, 280)}</div>
               </div>
             `).join("")}
           </td>
@@ -1004,40 +1037,42 @@ const renderWeeklyReportChartCard = (chartModel, { imageSrc = "" } = {}) => {
             width="520"
             height="${chartModel.chartHeightPx}"
             alt="${escapeWeeklyReportText(chartModel.chartAlt, 120)}"
-            style="display:block;width:100%;max-width:520px;height:auto;border:1px solid #e5e7eb;border-radius:12px;background:#ffffff;" />`
-    : `<div style="padding:34px 20px;text-align:center;color:#64748b;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:12px;font-size:13px;line-height:1.5;">
+            style="display:block;width:100%;max-width:520px;height:auto;border:1px solid ${BRAND.line};border-radius:12px;background:${BRAND.white};" />`
+    : `<div style="padding:34px 20px;text-align:center;color:${BRAND.muted};background:${BRAND.panel};border:1px dashed ${BRAND.rule};border-radius:12px;font-size:13px;line-height:1.5;">
          Chart preview is unavailable in this email.<br />Use the dashboard link for the full KPI trend view.
        </div>`;
 
+  // KPI card of the AVOCarbon charter: white card, neutral borders, AVO blue
+  // accent bar on the left of the title; values keep their status colors.
   return `
-    <table border="0" cellpadding="0" cellspacing="0" width="100%"
-           style="margin:22px 0 0;background:#ffffff;border:1px solid #d9e5f1;border-radius:16px;font-family:Arial,sans-serif;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.white}"
+           style="margin:22px 0 0;background:${BRAND.white};border:1px solid ${BRAND.line};border-radius:12px;font-family:${FONT};">
       <tr>
         <td style="padding:26px 26px 24px;">
-          <div style="font-size:18px;font-weight:700;color:#111827;line-height:1.3;margin:0 0 4px;">
+          <div style="font-size:18px;font-weight:700;color:${BRAND.ink};line-height:1.3;margin:0 0 4px;padding-left:10px;border-left:3px solid ${BRAND.blue};">
             ${escapeWeeklyReportText(chartModel.title, 120)}
           </div>
-          ${chartModel.subtitle ? `<div style="font-size:14px;color:#475569;line-height:1.4;margin:0 0 4px;">${escapeWeeklyReportText(chartModel.subtitle, 160)}</div>` : ""}
-          <div style="font-size:12px;color:#64748b;line-height:1.4;">
+          ${chartModel.subtitle ? `<div style="font-size:14px;color:${BRAND.text};line-height:1.4;margin:0 0 4px;">${escapeWeeklyReportText(chartModel.subtitle, 160)}</div>` : ""}
+          <div style="font-size:12px;color:${BRAND.muted};line-height:1.4;">
             Unit: ${escapeWeeklyReportText(chartModel.unit || "-", 20)} | Frequency: ${escapeWeeklyReportText(chartModel.frequency || "Monthly", 40)}
           </div>
 
-          <table border="0" cellpadding="0" cellspacing="0" width="100%"
-                 style="margin:18px 0 0;background:#ffffff;border:1px solid #dbe4ef;border-radius:12px;">
+          <table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="${BRAND.panel}"
+                 style="margin:18px 0 0;background:${BRAND.panel};border:1px solid ${BRAND.line};border-radius:12px;">
             <tr>
               <td align="center" width="33.33%" style="padding:16px 8px;">
-                <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Current</div>
+                <div style="font-size:10px;font-weight:700;color:${BRAND.muted};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Current</div>
                 <div style="font-size:22px;font-weight:700;color:${chartModel.currentColor};line-height:1.2;">${escapeWeeklyReportText(chartModel.currentValue, 40)}</div>
-                ${chartModel.currentWeekLabel ? `<div style="font-size:10px;color:#94a3b8;margin-top:4px;">${escapeWeeklyReportText(chartModel.currentWeekLabel, 40)}</div>` : ""}
+                ${chartModel.currentWeekLabel ? `<div style="font-size:10px;color:${BRAND.faint};margin-top:4px;">${escapeWeeklyReportText(chartModel.currentWeekLabel, 40)}</div>` : ""}
               </td>
-              <td align="center" width="33.33%" style="padding:16px 8px;border-left:1px solid #eef2f7;border-right:1px solid #eef2f7;">
-                <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Direction</div>
+              <td align="center" width="33.33%" style="padding:16px 8px;border-left:1px solid ${BRAND.line};border-right:1px solid ${BRAND.line};">
+                <div style="font-size:10px;font-weight:700;color:${BRAND.muted};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Direction</div>
                 <div style="font-size:34px;font-weight:700;color:${chartModel.directionColor};line-height:1;">${escapeWeeklyReportText(chartModel.directionArrow, 4)}</div>
               </td>
               <td align="center" width="33.33%" style="padding:16px 8px;">
-                <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Average</div>
-                <div style="font-size:22px;font-weight:700;color:#0f6cbd;line-height:1.2;">${escapeWeeklyReportText(chartModel.averageValue || "N/A", 40)}</div>
-                <div style="font-size:10px;color:#94a3b8;margin-top:4px;">${escapeWeeklyReportText(chartModel.periodsLabel, 40)}</div>
+                <div style="font-size:10px;font-weight:700;color:${BRAND.muted};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Average</div>
+                <div style="font-size:22px;font-weight:700;color:${BRAND.blue};line-height:1.2;">${escapeWeeklyReportText(chartModel.averageValue || "N/A", 40)}</div>
+                <div style="font-size:10px;color:${BRAND.faint};margin-top:4px;">${escapeWeeklyReportText(chartModel.periodsLabel, 40)}</div>
               </td>
             </tr>
           </table>
@@ -1048,7 +1083,7 @@ const renderWeeklyReportChartCard = (chartModel, { imageSrc = "" } = {}) => {
                 ${chartImageHtml}
               </td>
               <td valign="top" width="42%">
-                <div style="font-size:12px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:10px;">
+                <div style="font-size:12px;font-weight:700;color:${BRAND.ink};line-height:1.3;margin-bottom:10px;">
                   Corrective Actions
                 </div>
                 ${correctiveActionsPanelHtml}
@@ -1072,6 +1107,8 @@ const generateVerticalBarChart = (chartData, options = {}) => {
     options
   );
 
+  // Unreachable legacy renderer below (kept as it was, pre-charter colors):
+  // every call returns renderWeeklyReportChartCard above.
   const {
     title, subtitle, unit, data, weekLabels, currentWeek,
     stats, target, low_limit, high_limit,
